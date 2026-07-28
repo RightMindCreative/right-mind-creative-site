@@ -10,17 +10,18 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=5" />
-    <link rel="stylesheet" href="/admin.css?v=4" />
+    <link rel="stylesheet" href="/admin.css?v=5" />
     <script src="/admin-script.js?v=3" defer></script>
   </head>
   <body class="review-page">
     <div class="review-login" data-login>
-      <form class="login-card">
+      <form class="login-card" action="/api/admin/session" method="post" autocomplete="on">
         <p class="review-kicker">Private studio desk</p>
         <a class="wordmark" href="/index.html">right mind creative.</a>
         <h1>review the<br /><em>work.</em></h1>
         <p>Applications, private files, and project context—kept in one place.</p>
-        <label><span>Review password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+        <input class="password-username" name="username" type="text" value="right-mind-review" autocomplete="username" tabindex="-1" aria-hidden="true" />
+        <label><span>Review password</span><input name="password" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" required /></label>
         <p class="login-error" role="alert"></p>
         <button type="submit">enter the desk <b>↗︎</b></button>
       </form>
