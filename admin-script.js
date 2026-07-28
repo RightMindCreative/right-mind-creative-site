@@ -31,7 +31,9 @@ const formatDate = (value, options = {}) => {
 
 const formatTime = (value) => {
   if (!value) return "Flexible";
+  if (/^\d{1,2}:\d{2}\s*(AM|PM)$/i.test(value)) return value;
   const [hours, minutes] = value.split(":").map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return value;
   return new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     minute: "2-digit",
