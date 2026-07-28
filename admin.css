@@ -80,3 +80,11 @@
   .previous-applications{margin-top:52px;padding-top:34px}
   .previous-heading h2{font-size:38px}
 }
+.review-page,.review-login{min-height:100svh;min-height:100dvh}
+.review-login{padding-top:max(24px,env(safe-area-inset-top));padding-right:max(24px,env(safe-area-inset-right));padding-bottom:max(24px,env(safe-area-inset-bottom));padding-left:max(24px,env(safe-area-inset-left))}
+.review-header{padding-top:calc(20px + env(safe-area-inset-top));padding-left:max(var(--pad),env(safe-area-inset-left));padding-right:max(var(--pad),env(safe-area-inset-right))}
+.application-detail{padding-bottom:max(clamp(40px,6vw,90px),calc(30px + env(safe-area-inset-bottom)))}
+@media(max-width:620px){
+  .login-card input{font-size:16px}
+  .review-header{padding-top:calc(16px + env(safe-area-inset-top))}
+}

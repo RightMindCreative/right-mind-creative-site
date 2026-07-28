@@ -25,3 +25,10 @@
   cursor: wait;
   opacity: 0.58;
 }
+.booking-hero{height:92svh;height:92dvh}
+.booking-overlay{padding-top:max(20px,env(safe-area-inset-top));padding-right:max(20px,env(safe-area-inset-right));padding-bottom:max(20px,env(safe-area-inset-bottom));padding-left:max(20px,env(safe-area-inset-left))}
+@media(max-width:760px){
+  .booking-hero{height:max(820px,100svh);height:max(820px,100dvh)}
+  .booking-overlay:not(.is-success){padding-top:max(8px,env(safe-area-inset-top));padding-right:max(8px,env(safe-area-inset-right));padding-bottom:max(8px,env(safe-area-inset-bottom));padding-left:max(8px,env(safe-area-inset-left))}
+  .booking-overlay:not(.is-success) .booking-panel{max-height:calc(100dvh - max(16px,env(safe-area-inset-top)) - max(16px,env(safe-area-inset-bottom)))}
+}
