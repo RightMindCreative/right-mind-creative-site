@@ -182,7 +182,7 @@ const renderSocial = (value) => {
     const preview = socialPreview(url);
     const media = preview.embed
       ? `<iframe title="${escapeHtml(preview.platform)} preview" src="${escapeHtml(preview.embed)}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>`
-      : `<a class="social-placeholder" href="${escapeHtml(url)}" target="_blank" rel="noopener">
+      : `<a class="social-placeholder" data-social-url="${escapeHtml(url)}" href="${escapeHtml(url)}" target="_blank" rel="noopener">
           <span>${escapeHtml(preview.platform)}</span>
           <strong>${escapeHtml(preview.label)}</strong>
           <small>This profile protects its preview. Open it directly to view the latest work.</small>
@@ -195,6 +195,29 @@ const renderSocial = (value) => {
     </article>
   `;
   }).join("")}</div>`;
+};
+
+const hydrateSocialPreviews = async (container) => {
+  const placeholders = [...container.querySelectorAll("[data-social-url]")];
+  await Promise.all(placeholders.map(async (placeholder) => {
+    try {
+      const payload = await request(`/api/admin/social-preview?url=${encodeURIComponent(placeholder.dataset.socialUrl)}`);
+      if (!payload.image) return;
+      const image = document.createElement("img");
+      image.className = "social-placeholder-cover";
+      image.src = payload.image;
+      image.alt = "";
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      image.addEventListener("load", () => placeholder.classList.add("has-cover"), { once: true });
+      image.addEventListener("error", () => image.remove(), { once: true });
+      placeholder.prepend(image);
+      const title = placeholder.querySelector("strong");
+      if (payload.title && title) title.textContent = payload.title;
+    } catch {
+      // The branded card is the intentional fallback when a platform withholds metadata.
+    }
+  }));
 };
 
 const renderDecision = (application) => {
@@ -242,6 +265,7 @@ const renderDetail = ({ application, files }) => {
     <section class="review-section"><div class="review-section-head"><div><p>04 / Online presence</p><h3>social preview.</h3></div></div>${renderSocial(application.social_links)}</section>
     ${renderDecision(application)}
   `;
+  hydrateSocialPreviews(detail);
 };
 
 const showInbox = () => {
