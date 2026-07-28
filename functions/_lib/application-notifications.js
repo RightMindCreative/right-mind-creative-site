@@ -9,8 +9,22 @@ const escapeHtml = (value) => String(value || "")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
 
+const normalizeTime = (value) => {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/i);
+  if (!match) throw new Error("The requested session time is invalid.");
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const meridiem = match[3]?.toUpperCase();
+  if (meridiem) {
+    if (hour < 1 || hour > 12) throw new Error("The requested session time is invalid.");
+    hour = (hour % 12) + (meridiem === "PM" ? 12 : 0);
+  }
+  if (hour > 23 || minute > 59) throw new Error("The requested session time is invalid.");
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+};
+
 const addHours = (date, time, hours) => {
-  const start = new Date(`${date}T${time}:00`);
+  const start = new Date(`${date}T${normalizeTime(time)}:00`);
   start.setHours(start.getHours() + hours);
   const pad = (value) => String(value).padStart(2, "0");
   return `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}T${pad(start.getHours())}:${pad(start.getMinutes())}:00`;
@@ -53,7 +67,7 @@ const plainDescription = (application, files) => fieldRows(application, files)
 
 const eventDates = (application, createdAt, timeZone) => {
   if (application.usesCalendar) {
-    const start = `${application.preferredDate}T${application.preferredTime}:00`;
+    const start = `${application.preferredDate}T${normalizeTime(application.preferredTime)}:00`;
     return {
       start: { dateTime: start, timeZone },
       end: {
