@@ -147,6 +147,27 @@ const renderSocial = (value) => {
   `).join("")}</div>`;
 };
 
+const renderDecision = (application) => {
+  const decided = ["approved", "declined"].includes(application.status);
+  const emailSent = application.decision_email_status === "sent";
+  const message = decided
+    ? `Decision recorded ${application.decided_at ? formatDate(application.decided_at) : ""}${emailSent ? " · applicant email sent" : " · email needs attention"}`
+    : "Choosing a decision will immediately email the applicant.";
+  return `
+    <section class="decision-card" data-decision-card>
+      <div>
+        <p class="detail-kicker">Decision</p>
+        <h3>${decided ? `application ${escapeHtml(application.status)}.` : "ready to decide?"}</h3>
+        <p class="decision-note" data-decision-note>${escapeHtml(message)}</p>
+      </div>
+      <div class="decision-actions">
+        <button class="decision-button is-approve" type="button" data-decision="approved" ${decided ? "disabled" : ""}>approve application <b>✓</b></button>
+        <button class="decision-button is-decline" type="button" data-decision="declined" ${decided ? "disabled" : ""}>decline application <b>×</b></button>
+      </div>
+    </section>
+  `;
+};
+
 const renderDetail = ({ application, files }) => {
   const name = application.artist_name || `${application.first_name} ${application.last_name}`;
   detail.innerHTML = `
@@ -170,6 +191,7 @@ const renderDetail = ({ application, files }) => {
       ${detailField("Stems / trackouts", application.stem_count)}
       ${detailField("Additional information", application.notes, true)}
     </div>
+    ${renderDecision(application)}
     <section class="review-section"><div class="review-section-head"><div><p>03 / Submitted material</p><h3>listen &amp; look.</h3></div></div>${renderFiles(files)}</section>
     <section class="review-section"><div class="review-section-head"><div><p>04 / Online presence</p><h3>social preview.</h3></div></div>${renderSocial(application.social_links)}</section>
   `;
@@ -239,9 +261,41 @@ list.addEventListener("click", (event) => {
 });
 
 detail.addEventListener("click", (event) => {
-  if (!event.target.closest("[data-back]")) return;
-  if (location.hash.startsWith("#application=")) history.back();
-  else showInbox();
+  const back = event.target.closest("[data-back]");
+  if (back) {
+    if (location.hash.startsWith("#application=")) history.back();
+    else showInbox();
+    return;
+  }
+  const decisionButton = event.target.closest("[data-decision]");
+  if (!decisionButton || !selectedId) return;
+  const decision = decisionButton.dataset.decision;
+  const verb = decision === "approved" ? "approve" : "decline";
+  if (!window.confirm(`Are you sure you want to ${verb} this application? This will immediately email the applicant.`)) return;
+  const card = decisionButton.closest("[data-decision-card]");
+  const note = card.querySelector("[data-decision-note]");
+  const buttons = card.querySelectorAll("[data-decision]");
+  buttons.forEach((button) => { button.disabled = true; });
+  note.textContent = "Saving decision and sending applicant email…";
+  fetch(`/api/admin/applications/${encodeURIComponent(selectedId)}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ decision }),
+  }).then(async (response) => {
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "The decision could not be completed.");
+    const listItem = applications.find((application) => application.id === selectedId);
+    if (listItem) {
+      listItem.status = decision;
+      listItem.decided_at = payload.application.decided_at;
+      listItem.decision_email_status = payload.application.decision_email_status;
+    }
+    renderList();
+    await selectApplication(selectedId, false);
+  }).catch((error) => {
+    note.textContent = error.message;
+    buttons.forEach((button) => { button.disabled = false; });
+  });
 });
 
 window.addEventListener("popstate", () => {
