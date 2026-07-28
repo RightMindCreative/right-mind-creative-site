@@ -3,6 +3,7 @@ const loginForm = loginView.querySelector("form");
 const loginError = loginView.querySelector(".login-error");
 const appView = document.querySelector("[data-app]");
 const list = document.querySelector("[data-list]");
+const previousList = document.querySelector("[data-previous-list]");
 const detail = document.querySelector("[data-detail]");
 const count = document.querySelector("[data-count]");
 const logout = document.querySelector("[data-logout]");
@@ -68,18 +69,33 @@ const showApp = () => {
 };
 
 const renderList = () => {
-  count.textContent = `${applications.length} ${applications.length === 1 ? "request" : "requests"}`;
-  list.innerHTML = applications.map((application) => {
+  const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  const pending = applications.filter((application) => !["approved", "declined"].includes(application.status));
+  const previous = applications.filter((application) => (
+    ["approved", "declined"].includes(application.status)
+    && new Date(application.decided_at || application.updated_at || application.created_at).getTime() >= thirtyDaysAgo
+  ));
+  count.textContent = `${pending.length} pending`;
+
+  const cards = (items, completed = false) => items.map((application) => {
     const name = application.artist_name || `${application.first_name} ${application.last_name}`;
     return `
       <button class="application-card ${application.id === selectedId ? "is-active" : ""}" type="button" data-id="${escapeHtml(application.id)}">
         <span>${escapeHtml(formatDate(application.created_at))} · ${escapeHtml(application.status)}</span>
         <h3>${escapeHtml(name)}</h3>
         <p>${escapeHtml(application.service)}</p>
-        <footer><span>${escapeHtml(application.preferred_date ? formatDate(application.preferred_date) : "No calendar request")}</span><span>${Number(application.file_count) || 0} files</span></footer>
+        <footer>
+          <span>${escapeHtml(application.preferred_date ? formatDate(application.preferred_date) : "No calendar request")}</span>
+          ${completed
+            ? `<span class="card-decision is-${escapeHtml(application.status)}">${escapeHtml(application.status)}</span>`
+            : `<span>${Number(application.file_count) || 0} files</span>`}
+        </footer>
       </button>
     `;
-  }).join("") || `<p class="review-message">No applications have been submitted yet.</p>`;
+  }).join("");
+
+  list.innerHTML = cards(pending) || `<p class="review-message">No applications are waiting for review.</p>`;
+  previousList.innerHTML = cards(previous, true) || `<p class="review-message">No applications have been completed in the past 30 days.</p>`;
 };
 
 const detailField = (label, value, wide = false, link = "") => {
@@ -253,6 +269,10 @@ loginForm.addEventListener("submit", async (event) => {
 });
 
 list.addEventListener("click", (event) => {
+  const card = event.target.closest("[data-id]");
+  if (card) selectApplication(card.dataset.id);
+});
+previousList.addEventListener("click", (event) => {
   const card = event.target.closest("[data-id]");
   if (card) selectApplication(card.dataset.id);
 });

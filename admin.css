@@ -55,6 +55,14 @@
 .decision-dialog-actions [data-cancel-decision]{background:transparent}
 .status-pill.status-approved{background:rgba(128,203,157,.14);border-color:rgba(128,203,157,.55);color:#a8e0bd}
 .status-pill.status-declined{background:rgba(224,127,111,.13);border-color:rgba(224,127,111,.5);color:#f2a394}
+.previous-applications{margin-top:70px;padding-top:42px;border-top:1px solid var(--review-line)}
+.previous-heading{position:relative;margin-bottom:24px}
+.previous-heading p,.previous-heading span{margin:0;color:#777;font-size:8px;text-transform:uppercase;letter-spacing:.16em}
+.previous-heading h2{margin:15px 0 10px;font-size:clamp(32px,4vw,52px);line-height:.86;letter-spacing:-.06em}
+.previous-heading h2 em{font-family:"Times New Roman",serif;font-weight:400}
+.card-decision{font-weight:700}
+.card-decision.is-approved{color:#8ed5aa}
+.card-decision.is-declined{color:#ef8f7e}
 .password-username{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 @media(max-width:900px){
   .application-list{display:grid;overflow:visible;scroll-snap-type:none}
@@ -69,4 +77,6 @@
   .decision-actions{display:grid;grid-template-columns:1fr}
   .decision-button{width:100%;min-width:0}
   .decision-dialog-card{padding:28px 22px}
+  .previous-applications{margin-top:52px;padding-top:34px}
+  .previous-heading h2{font-size:38px}
 }

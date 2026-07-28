@@ -10,8 +10,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=5" />
-    <link rel="stylesheet" href="/admin.css?v=7" />
-    <script src="/admin-script.js?v=5" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=8" />
+    <script src="/admin-script.js?v=6" defer></script>
   </head>
   <body class="review-page">
     <div class="review-login" data-login>
@@ -36,8 +36,16 @@
 
       <main class="review-shell">
         <aside class="application-rail">
-          <div class="rail-heading"><p>01 / Inbox</p><h1>the<br /><em>requests.</em></h1></div>
+          <div class="rail-heading"><p>01 / Inbox</p><h1>pending<br /><em>applications.</em></h1></div>
           <div class="application-list" data-list></div>
+          <section class="previous-applications">
+            <div class="previous-heading">
+              <p>02 / Archive</p>
+              <h2>previous<br /><em>applications.</em></h2>
+              <span>Past 30 days</span>
+            </div>
+            <div class="application-list" data-previous-list></div>
+          </section>
         </aside>
 
         <section class="application-detail" data-detail>
