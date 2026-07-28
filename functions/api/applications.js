@@ -5,6 +5,8 @@ import {
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 50 * 1024 * 1024;
+const MINIMUM_LEAD_TIME_MS = 48 * 60 * 60 * 1000;
+const TIME_ZONE = "America/Chicago";
 const ALLOWED_FILE_TYPES = new Set([
   "application/msword",
   "application/pdf",
@@ -43,6 +45,30 @@ const safeObjectName = (name) => name
   .replace(/^-|-$/g, "")
   .slice(0, 120) || "upload";
 
+const centralOffset = (date) => {
+  const value = new Intl.DateTimeFormat("en-US", {
+    timeZone: TIME_ZONE,
+    timeZoneName: "longOffset",
+  }).formatToParts(date).find((part) => part.type === "timeZoneName")?.value || "GMT-06:00";
+  return value.replace("GMT", "");
+};
+
+const applicationStart = (application) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(application.preferredDate)) return null;
+  const match = application.preferredTime.match(/^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/i);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const meridiem = match[3]?.toUpperCase();
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return null;
+    hour = (hour % 12) + (meridiem === "PM" ? 12 : 0);
+  }
+  if (hour > 23 || minute > 59) return null;
+  const probe = new Date(`${application.preferredDate}T12:00:00Z`);
+  return new Date(`${application.preferredDate}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00${centralOffset(probe)}`);
+};
+
 const validate = (application) => {
   const errors = [];
   if (!application.service) errors.push("Choose an application direction.");
@@ -54,6 +80,11 @@ const validate = (application) => {
   if (!application.phone) errors.push("Phone number is required.");
   if (application.usesCalendar && (!application.preferredDate || !application.preferredTime)) {
     errors.push("Choose a preferred date and time.");
+  } else if (application.usesCalendar) {
+    const start = applicationStart(application);
+    if (!start || start.getTime() < Date.now() + MINIMUM_LEAD_TIME_MS) {
+      errors.push("Session requests must begin at least 48 hours from now.");
+    }
   }
   if (application.category === "mixing" && (!application.stemCount || Number(application.stemCount) < 1)) {
     errors.push("Enter the number of stems or trackouts.");

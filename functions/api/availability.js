@@ -2,6 +2,7 @@ import { calendarIsConfigured, getBusyPeriods } from "../_lib/google-calendar.js
 
 const TIME_ZONE = "America/Chicago";
 const ALLOWED_DURATIONS = new Set([2, 3, 4, 6, 8, 12]);
+const MINIMUM_LEAD_TIME_MS = 48 * 60 * 60 * 1000;
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
@@ -64,7 +65,10 @@ export async function onRequestGet(context) {
   const candidates = Array.from(
     { length: latestHour - firstHour + 1 },
     (_, index) => firstHour + index,
-  );
+  ).filter((hour) => (
+    new Date(toCentralIso(date, hour)).getTime() >= Date.now() + MINIMUM_LEAD_TIME_MS
+  ));
+  if (!candidates.length) return json({ date, slots: [], reason: "lead-time" });
   if (!calendarIsConfigured(context.env)) {
     return json({
       date,

@@ -48,6 +48,7 @@ const getSessionHours = () => {
   const selectedLength = form.elements.serviceOption.value;
   return selectedLength === "Full day" ? 12 : Number.parseInt(selectedLength, 10);
 };
+const minimumBookingStart = () => new Date(Date.now() + 48 * 60 * 60 * 1000);
 const serviceOptionField = document.querySelector(".service-option-field");
 const serviceOptionSelect = serviceOptionField.querySelector("select");
 const vocalRecordingFields = [...document.querySelectorAll(".vocal-recording-field")];
@@ -208,7 +209,9 @@ const renderCalendar = () => {
     button.textContent = day;
     const sessionHours = getSessionHours();
     const cannotFitSunday = date.getDay() === 0 && Number.isFinite(sessionHours) && 13 + sessionHours > 24;
-    button.disabled = date < today || date.getDay() === 1 || cannotFitSunday;
+    const latestStartHour = Number.isFinite(sessionHours) ? 24 - sessionHours : 22;
+    const missesLeadTime = new Date(year, month, day, latestStartHour, 0, 0, 0) < minimumBookingStart();
+    button.disabled = date < today || date.getDay() === 1 || cannotFitSunday || missesLeadTime;
     const value = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
     button.setAttribute("aria-label", formatDate(value));
     button.addEventListener("click", () => selectDate(value, button));
