@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>Application Review — Right Mind Creative</title>
+    <link rel="icon" href="/media/mark.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/style.css?v=5" />
+    <link rel="stylesheet" href="/admin.css?v=1" />
+    <script src="/admin-script.js?v=1" defer></script>
+  </head>
+  <body class="review-page">
+    <div class="review-login" data-login>
+      <form class="login-card">
+        <p class="review-kicker">Private studio desk</p>
+        <a class="wordmark" href="/index.html">right mind creative.</a>
+        <h1>review the<br /><em>work.</em></h1>
+        <p>Applications, private files, and project context—kept in one place.</p>
+        <label><span>Review password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+        <p class="login-error" role="alert"></p>
+        <button type="submit">enter the desk <b>↗︎</b></button>
+      </form>
+    </div>
+
+    <div class="review-app" data-app hidden>
+      <header class="review-header">
+        <a class="wordmark" href="/index.html">right mind creative.</a>
+        <div><span>Application desk</span><strong data-count>0 requests</strong></div>
+        <button type="button" data-logout>sign out</button>
+      </header>
+
+      <main class="review-shell">
+        <aside class="application-rail">
+          <div class="rail-heading"><p>01 / Inbox</p><h1>the<br /><em>requests.</em></h1></div>
+          <div class="application-list" data-list></div>
+        </aside>
+
+        <section class="application-detail" data-detail>
+          <div class="empty-state">
+            <p>Studio application desk</p>
+            <h2>choose a request<br /><em>to review.</em></h2>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
