@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+._*
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+
+# JavaScript tooling
+node_modules/
+dist/
+.cache/
+
+# Cloudflare local state
+.wrangler/
+.cloudflare/
+
+# Local application data
+uploads/
+tmp/
+*.log
+
+# Audio masters stay outside Git. Web-ready copies will be deployed separately.
+media/*.wav
+
