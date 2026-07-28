@@ -3,12 +3,6 @@ import { calendarIsConfigured, createCalendarEvent } from "./google-calendar.js"
 const REQUEST_COLOR_ID = "6";
 const DEFAULT_TIME_ZONE = "America/Chicago";
 
-const escapeHtml = (value) => String(value || "")
-  .replace(/&/g, "&amp;")
-  .replace(/</g, "&lt;")
-  .replace(/>/g, "&gt;")
-  .replace(/"/g, "&quot;");
-
 const normalizeTime = (value) => {
   const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/i);
   if (!match) throw new Error("The requested session time is invalid.");
@@ -103,36 +97,4 @@ export const addApplicationToCalendar = async (application, files, env) => {
   if (!calendarIsConfigured(env)) return { status: "not_configured" };
   const event = await createCalendarEvent(env, buildApplicationEvent(application, files, env));
   return { status: "sent", eventId: event.id, eventLink: event.htmlLink };
-};
-
-export const sendApplicationEmail = async (application, files, env) => {
-  if (!env.APPLICATION_EMAIL) return { status: "not_configured" };
-  const to = env.APPLICATION_NOTIFICATION_EMAIL;
-  const from = env.APPLICATION_NOTIFICATION_FROM;
-  if (!to || !from) return { status: "not_configured" };
-
-  const artist = application.artistName || `${application.firstName} ${application.lastName}`.trim();
-  const rows = fieldRows(application, files);
-  const html = `
-    <h1>New session request</h1>
-    <p><strong>${escapeHtml(application.service)}</strong> from ${escapeHtml(artist)}</p>
-    <table cellpadding="6" cellspacing="0" style="border-collapse:collapse">
-      ${rows.map(([label, value]) => `
-        <tr>
-          <td style="vertical-align:top;color:#666"><strong>${escapeHtml(label)}</strong></td>
-          <td style="white-space:pre-wrap">${escapeHtml(value)}</td>
-        </tr>
-      `).join("")}
-    </table>
-  `;
-
-  await env.APPLICATION_EMAIL.send({
-    to,
-    from,
-    replyTo: application.email,
-    subject: `New session request: ${application.service} · ${artist}`,
-    text: `A new session request was submitted.\n\n${plainDescription(application, files)}`,
-    html,
-  });
-  return { status: "sent" };
 };

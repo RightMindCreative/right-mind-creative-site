@@ -1,7 +1,4 @@
-import {
-  addApplicationToCalendar,
-  sendApplicationEmail,
-} from "../_lib/application-notifications.js";
+import { addApplicationToCalendar } from "../_lib/application-notifications.js";
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 50 * 1024 * 1024;
@@ -163,8 +160,8 @@ export async function onRequestPost(context) {
         INSERT INTO applications (
           id, created_at, status, category, service, service_option,
           preferred_date, preferred_time, first_name, last_name, artist_name,
-          email, phone, stem_count, social_links, notes
-        ) VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          email, phone, stem_count, social_links, notes, email_notification_status
+        ) VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled')
       `).bind(
         id, createdAt, category, service, application.serviceOption,
         application.preferredDate, application.preferredTime, application.firstName,
@@ -189,7 +186,6 @@ export async function onRequestPost(context) {
 
   const integrations = {
     calendar: { status: "pending" },
-    email: { status: "pending" },
   };
 
   try {
@@ -199,35 +195,21 @@ export async function onRequestPost(context) {
     console.error("Application calendar sync failed", { id, error });
   }
 
-  try {
-    integrations.email = await sendApplicationEmail(application, storedFiles, context.env);
-  } catch (error) {
-    integrations.email = { status: "failed" };
-    console.error("Application email notification failed", { id, error });
-  }
-
   const calendarError = integrations.calendar.status === "failed"
     ? "Calendar event creation failed; retry required."
-    : null;
-  const emailError = integrations.email.status === "failed"
-    ? "Email notification failed; retry required."
     : null;
   await context.env.APPLICATIONS_DB.prepare(`
     UPDATE applications
     SET updated_at = ?,
         google_event_id = ?,
         calendar_sync_status = ?,
-        calendar_sync_error = ?,
-        email_notification_status = ?,
-        email_notification_error = ?
+        calendar_sync_error = ?
     WHERE id = ?
   `).bind(
     new Date().toISOString(),
     integrations.calendar.eventId || null,
     integrations.calendar.status,
     calendarError,
-    integrations.email.status,
-    emailError,
     id,
   ).run().catch((error) => {
     console.error("Application integration status update failed", { id, error });
