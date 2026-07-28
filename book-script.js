@@ -299,9 +299,33 @@ const buildSummary = () => {
   }));
 };
 
-form.addEventListener("submit", (event) => {
+form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (validateStep()) showStep(5);
+  if (!validateStep() || !selectedCard) return;
+
+  const submitButton = form.querySelector('button[type="submit"]');
+  const submitStatus = document.querySelector(".booking-submit-status");
+  const payload = new FormData(form);
+  payload.set("category", selectedCard.dataset.category);
+  payload.set("service", selectedCard.dataset.service);
+  submitButton.disabled = true;
+  submitButton.firstChild.textContent = "sending application ";
+  submitStatus.textContent = "";
+  submitStatus.classList.remove("is-error");
+
+  try {
+    const response = await fetch("/api/applications", { method: "POST", body: payload });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "We couldn’t send the application. Please try again.");
+    form.dataset.applicationId = result.id;
+    showStep(5);
+  } catch (error) {
+    submitStatus.textContent = error.message;
+    submitStatus.classList.add("is-error");
+  } finally {
+    submitButton.disabled = false;
+    submitButton.firstChild.textContent = "submit application ";
+  }
 });
 document.querySelector("[data-finish]").addEventListener("click", closeBooking);
 renderCalendar();

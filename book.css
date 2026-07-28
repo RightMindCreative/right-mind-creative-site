@@ -8,3 +8,20 @@
 .booking-reveal{opacity:0;transform:translateY(38px);transition:.85s cubic-bezier(.22,1,.36,1)}.booking-reveal.is-visible{opacity:1;transform:none}
 @media(max-width:760px){.booking-page .site-header nav{display:none}.booking-hero{height:820px}.booking-hero h1{font-size:20vw;line-height:.83}.booking-hero h1 span:last-child{padding-left:0}.booking-hero-note{width:auto;margin:35px 0 0;padding:19px}.booking-hero-note p{font-size:13px}.booking-section-head h2{font-size:15vw}.service-filter{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;overflow:visible;margin:55px 0 40px}.service-filter button{width:100%;min-height:44px;padding:10px 6px;font-size:7px;line-height:1.35;white-space:normal}.booking-service-card{min-height:135vw}.service-glass{left:18px;right:18px;top:auto;bottom:18px;transform:none;width:auto;padding:24px;border-radius:26px 34px 24px 31px}.service-glass h3{font-size:9vw;margin:25px 0}.assurance-grid{grid-template-columns:1fr}.assurance-grid h2{font-size:14vw}.booking-overlay{padding:8px}.booking-panel{max-height:calc(100svh - 16px);padding:22px;border-radius:26px}.booking-progress{margin:7px 42px 35px 0;gap:5px}.booking-progress span{font-size:6px}.selected-service{grid-template-columns:80px 1fr;gap:18px}.selected-service img{width:80px;height:80px}.selected-service h2,.step-title h2{font-size:10vw}.schedule-grid{grid-template-columns:1fr}.time-column{padding:25px 0 0;border-left:0;border-top:1px solid #333}.form-grid{grid-template-columns:1fr}.form-grid .full{grid-column:auto}.booking-summary{grid-template-columns:1fr}.panel-actions button:last-child{min-width:0}.booking-close{right:13px;top:12px}}
 @media(prefers-reduced-motion:reduce){.booking-reveal{opacity:1;transform:none;transition:none}.booking-service-card>img{transition:none}}
+.booking-submit-status {
+  min-height: 1.25rem;
+  margin: 1rem 0 0;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.booking-submit-status.is-error {
+  color: #ffb7a8;
+}
+
+.booking-form button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
