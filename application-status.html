@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Application Status — Right Mind Creative</title>
+    <link rel="icon" href="/media/mark.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/style.css?v=5" />
+    <link rel="stylesheet" href="/application-status.css?v=2" />
+    <script src="/application-status.js?v=2" defer></script>
+  </head>
+  <body class="status-page">
+    <header class="status-header">
+      <a class="wordmark" href="/index.html">right mind creative.</a>
+      <span>Private application portal</span>
+      <a href="mailto:welcome@rightmindcreative.co">need help? ↗︎</a>
+    </header>
+
+    <main class="status-shell" data-status-shell aria-busy="true">
+      <section class="status-access" data-access>
+        <form class="status-access-card" data-access-form>
+          <p class="status-kicker">Private application portal</p>
+          <a class="access-wordmark" href="/index.html">right mind creative.</a>
+          <h1>let’s find<br /><em>your application.</em></h1>
+          <p>Enter the last four digits of the phone number included with your application.</p>
+          <label>
+            <span>Last four digits</span>
+            <input name="lastFour" type="text" inputmode="numeric" autocomplete="off" pattern="[0-9]{4}" maxlength="4" placeholder="••••" aria-label="Last four digits of phone number" required />
+          </label>
+          <p class="access-error" data-access-error role="alert"></p>
+          <button type="submit">view application <b>↗︎</b></button>
+        </form>
+      </section>
+
+      <section class="status-error" data-error hidden>
+        <p class="status-kicker">Application portal</p>
+        <h1>this link<br /><em>isn’t available.</em></h1>
+        <p data-error-copy>Check that the full link from your email was opened.</p>
+        <a href="mailto:welcome@rightmindcreative.co">contact the studio <b>↗︎</b></a>
+      </section>
+
+      <div data-portal hidden>
+        <section class="status-hero">
+          <div class="status-hero-shade"></div>
+          <div class="status-hero-copy">
+            <p class="status-kicker">Right Mind Creative / Application</p>
+            <p class="artist-route" data-artist-route></p>
+            <h1><span data-greeting></span><br /><em data-hero-state></em></h1>
+            <div class="status-hero-bottom">
+              <span class="public-status-pill" data-status-pill></span>
+              <p data-status-summary></p>
+            </div>
+          </div>
+        </section>
+
+        <section class="status-body">
+          <div class="status-section-heading">
+            <p>01 / Your request</p>
+            <h2>application<br /><em>details.</em></h2>
+          </div>
+          <div class="status-detail-grid" data-details></div>
+
+          <div class="status-section-heading timeline-heading">
+            <p>02 / Progress</p>
+            <h2>where things<br /><em>stand.</em></h2>
+          </div>
+          <ol class="application-timeline" data-timeline></ol>
+
+          <section class="status-next-card">
+            <p>03 / What happens next</p>
+            <h2 data-next-title></h2>
+            <p data-next-copy></p>
+            <a href="mailto:welcome@rightmindcreative.co">welcome@rightmindcreative.co <b>↗︎</b></a>
+          </section>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

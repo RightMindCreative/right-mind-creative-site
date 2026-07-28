@@ -139,6 +139,7 @@ export async function onRequestPost(context) {
   }
 
   const id = crypto.randomUUID();
+  const statusToken = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   application.id = id;
   application.createdAt = createdAt;
@@ -160,14 +161,15 @@ export async function onRequestPost(context) {
         INSERT INTO applications (
           id, created_at, status, category, service, service_option,
           preferred_date, preferred_time, first_name, last_name, artist_name,
-          email, phone, stem_count, social_links, notes, email_notification_status
-        ) VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled')
+          email, phone, stem_count, social_links, notes, email_notification_status,
+          public_status_token
+        ) VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?)
       `).bind(
         id, createdAt, category, service, application.serviceOption,
         application.preferredDate, application.preferredTime, application.firstName,
         application.lastName, application.artistName, application.email,
         application.phone, application.stemCount || null, application.socialLinks,
-        application.notes
+        application.notes, statusToken
       ),
       ...storedFiles.map((file) => context.env.APPLICATIONS_DB.prepare(`
         INSERT INTO application_files (
@@ -215,7 +217,12 @@ export async function onRequestPost(context) {
     console.error("Application integration status update failed", { id, error });
   });
 
-  return json({ id, status: "received", integrations }, 201);
+  return json({
+    id,
+    status: "received",
+    statusUrl: `/application-status?token=${encodeURIComponent(statusToken)}`,
+    integrations,
+  }, 201);
 }
 
 export function onRequest(context) {
