@@ -170,13 +170,18 @@ const renderSocial = (value) => {
 
 const renderDecision = (application) => {
   const decided = ["approved", "declined"].includes(application.status);
+  const emailFailed = decided && application.decision_email_status === "failed";
   return `
     <section class="decision-card" data-decision-card>
       <div class="decision-actions">
-        <button class="decision-button is-approve" type="button" data-decision="approved" ${decided ? "disabled" : ""}>approve application <b>✓</b></button>
-        <button class="decision-button is-decline" type="button" data-decision="declined" ${decided ? "disabled" : ""}>decline application <b>×</b></button>
+        ${emailFailed ? `
+          <button class="decision-button is-approve" type="button" data-decision="${escapeHtml(application.status)}">retry applicant email <b>↗︎</b></button>
+        ` : `
+          <button class="decision-button is-approve" type="button" data-decision="approved" ${decided ? "disabled" : ""}>approve application <b>✓</b></button>
+          <button class="decision-button is-decline" type="button" data-decision="declined" ${decided ? "disabled" : ""}>decline application <b>×</b></button>
+        `}
       </div>
-      ${decided ? `<p class="decision-result">Application ${escapeHtml(application.status)}${application.decision_email_status === "sent" ? " · applicant notified" : ""}</p>` : ""}
+      ${decided ? `<p class="decision-result">Application ${escapeHtml(application.status)}${application.decision_email_status === "sent" ? " · applicant notified" : " · email delivery failed"}</p>` : ""}
     </section>
   `;
 };
