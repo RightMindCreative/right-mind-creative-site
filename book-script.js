@@ -216,7 +216,12 @@ const renderCalendar = () => {
   }
 };
 
-const selectDate = (value, button) => {
+const formatHour = (hour) => {
+  const displayHour = hour > 12 ? hour - 12 : hour;
+  return `${displayHour}:00 ${hour >= 12 ? "PM" : "AM"}`;
+};
+
+const selectDate = async (value, button) => {
   document.querySelectorAll(".calendar-days button").forEach((item) => item.classList.toggle("is-selected", item === button));
   form.elements.date.value = value;
   form.elements.time.value = "";
@@ -229,11 +234,21 @@ const selectDate = (value, button) => {
   const sessionHours = getSessionHours();
   const latestStartHour = Number.isFinite(sessionHours) ? 24 - sessionHours : 22;
   const firstStartHour = selectedDate.getDay() === 0 ? 13 : 10;
-  const availableTimes = Array.from({ length: Math.max(0, latestStartHour - firstStartHour + 1) }, (_, index) => {
-    const hour = index + 10;
-    const displayHour = hour > 12 ? hour - 12 : hour;
-    return `${displayHour}:00 ${hour >= 12 ? "PM" : "AM"}`;
-  });
+  let availableHours = Array.from(
+    { length: Math.max(0, latestStartHour - firstStartHour + 1) },
+    (_, index) => index + firstStartHour
+  );
+  document.querySelector(".time-wheel-hint").textContent = "Checking live availability…";
+  try {
+    const response = await fetch(`/api/availability?date=${encodeURIComponent(value)}&duration=${sessionHours}`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    availableHours = result.slots;
+  } catch {
+    document.querySelector(".time-wheel-hint").textContent = "Live availability could not be loaded. Choose another date or try again.";
+    return;
+  }
+  const availableTimes = availableHours.map(formatHour);
   const latestStart = availableTimes.at(-1);
   document.querySelector(".time-wheel-hint").textContent = latestStart
     ? `Scroll and select a time · latest start ${latestStart}`

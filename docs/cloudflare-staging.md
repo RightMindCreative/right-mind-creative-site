@@ -30,3 +30,18 @@ Use environment-specific names so testing data can never collide with production
 - R2 web media: `right-mind-media-staging`
 - Worker/API: `right-mind-booking-api-staging`
 
+## Google Calendar staging
+
+Create a dedicated calendar named `Right Mind Booking Staging`. Enable the
+Google Calendar API in a Google Cloud project, create a service account, and
+share only the staging calendar with that service account.
+
+Configure these Pages preview variables:
+
+- `BOOKING_TIME_ZONE`: `America/Chicago`
+- `GOOGLE_CALENDAR_ID`: the staging calendar ID
+- `GOOGLE_SERVICE_ACCOUNT_EMAIL`: the service account email
+- `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`: the private key stored as an encrypted
+  secret
+
+Do not reuse these credentials or this calendar in production.
