@@ -33,5 +33,14 @@
   .file-preview{min-height:220px}
   .file-preview img,.file-preview video,.file-preview iframe{height:240px}
   .social-card iframe{height:300px}
-  .social-info{align-items:flex-start;flex-direction:column}
+.social-info{align-items:flex-start;flex-direction:column}
+}
+.detail-back{display:none}
+@media(max-width:900px){
+  .application-list{display:grid;overflow:visible;scroll-snap-type:none}
+  .application-card{width:100%;max-width:none;min-width:0}
+  .application-detail{display:none}
+  .review-app.is-detail .application-rail{display:none}
+  .review-app.is-detail .application-detail{display:block}
+  .detail-back{display:inline-flex;align-items:center;margin:0 0 18px;padding:11px 15px;border:1px solid rgba(255,255,255,.3);border-radius:999px;background:transparent;color:#fff;font-size:8px;text-transform:uppercase;letter-spacing:.14em}
 }

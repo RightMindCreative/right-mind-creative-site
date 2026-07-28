@@ -9,6 +9,7 @@ const logout = document.querySelector("[data-logout]");
 
 let applications = [];
 let selectedId = "";
+const mobileReview = window.matchMedia("(max-width: 900px)");
 
 const escapeHtml = (value) => String(value ?? "")
   .replace(/&/g, "&amp;")
@@ -149,6 +150,7 @@ const renderSocial = (value) => {
 const renderDetail = ({ application, files }) => {
   const name = application.artist_name || `${application.first_name} ${application.last_name}`;
   detail.innerHTML = `
+    <button class="detail-back" type="button" data-back>← back to applications</button>
     <div class="detail-hero">
       <div>
         <p class="detail-kicker">02 / Application review · ${escapeHtml(formatDate(application.created_at))}</p>
@@ -173,9 +175,20 @@ const renderDetail = ({ application, files }) => {
   `;
 };
 
-const selectApplication = async (id) => {
+const showInbox = () => {
+  appView.classList.remove("is-detail");
+  selectedId = "";
+  renderList();
+};
+
+const selectApplication = async (id, navigate = true) => {
   selectedId = id;
   renderList();
+  if (mobileReview.matches) {
+    appView.classList.add("is-detail");
+    if (navigate) history.pushState({ applicationId: id }, "", `#application=${encodeURIComponent(id)}`);
+    window.scrollTo(0, 0);
+  }
   detail.classList.add("review-loading");
   try {
     renderDetail(await request(`/api/admin/applications/${encodeURIComponent(id)}`));
@@ -189,9 +202,14 @@ const selectApplication = async (id) => {
 const loadApplications = async () => {
   const payload = await request("/api/admin/applications");
   applications = payload.applications || [];
-  selectedId = applications[0]?.id || "";
+  const requestedId = new URLSearchParams(location.hash.replace(/^#/, "")).get("application");
+  selectedId = mobileReview.matches ? "" : applications[0]?.id || "";
   renderList();
-  if (selectedId) await selectApplication(selectedId);
+  if (mobileReview.matches && requestedId && applications.some((application) => application.id === requestedId)) {
+    await selectApplication(requestedId, false);
+  } else if (selectedId) {
+    await selectApplication(selectedId, false);
+  }
 };
 
 loginForm.addEventListener("submit", async (event) => {
@@ -218,6 +236,19 @@ loginForm.addEventListener("submit", async (event) => {
 list.addEventListener("click", (event) => {
   const card = event.target.closest("[data-id]");
   if (card) selectApplication(card.dataset.id);
+});
+
+detail.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-back]")) return;
+  if (location.hash.startsWith("#application=")) history.back();
+  else showInbox();
+});
+
+window.addEventListener("popstate", () => {
+  if (!mobileReview.matches) return;
+  const id = new URLSearchParams(location.hash.replace(/^#/, "")).get("application");
+  if (id && applications.some((application) => application.id === id)) selectApplication(id, false);
+  else showInbox();
 });
 
 logout.addEventListener("click", async () => {
