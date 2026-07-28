@@ -125,6 +125,11 @@ const usesCalendar = () => selectedCard?.dataset.category !== "mixing" && !isCus
 
 const showStep = (step) => {
   currentStep = step;
+  const isSuccess = step === 5;
+  overlay.classList.toggle("is-success", isSuccess);
+  if (isSuccess && document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
   steps.forEach((panel) => {
     const active = Number(panel.dataset.step) === step;
     panel.hidden = !active;
@@ -132,6 +137,7 @@ const showStep = (step) => {
   });
   progressItems.forEach((item, index) => item.classList.toggle("is-active", index <= Math.min(step - 1, 3)));
   document.querySelector(".booking-panel").scrollTop = 0;
+  if (isSuccess) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   if (step === 4) buildSummary();
 };
 
@@ -159,6 +165,7 @@ const openBooking = (card) => {
 document.querySelectorAll(".book-service").forEach((button) => button.addEventListener("click", () => openBooking(button.closest(".booking-service-card"))));
 
 const closeBooking = () => {
+  overlay.classList.remove("is-success");
   overlay.hidden = true;
   document.body.style.overflow = "";
   selectedCard?.querySelector(".book-service")?.focus();
