@@ -118,3 +118,24 @@ export const createCalendarEvent = async (env, event) => {
   }
   return response.json();
 };
+
+export const updateCalendarEvent = async (env, eventId, changes) => {
+  const accessToken = await getAccessToken(env);
+  const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}?sendUpdates=none`,
+    {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(changes),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Google event update failed (${response.status}): ${detail.slice(0, 500)}`);
+  }
+  return response.json();
+};

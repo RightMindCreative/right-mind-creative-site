@@ -4,6 +4,7 @@ const accessForm = document.querySelector("[data-access-form]");
 const accessError = document.querySelector("[data-access-error]");
 const errorView = document.querySelector("[data-error]");
 const portal = document.querySelector("[data-portal]");
+let verifiedLastFour = "";
 
 const escapeHtml = (value) => String(value ?? "").replace(/&/g, "&amp;")
   .replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -35,8 +36,22 @@ const stateContent = {
     hero: "approved.",
     summary: "We’d love to move forward with your project. Your application has been approved.",
     nextTitle: "let’s make something.",
-    nextCopy: "The studio will follow up with scheduling and payment details. Keep this private link handy—your next steps will live here.",
-    activeStep: 2,
+    nextCopy: "Your session deposit is ready. Once it is paid securely through Stripe, this page will confirm your booking.",
+    activeStep: 3,
+  },
+  payment_pending: {
+    hero: "deposit ready.",
+    summary: "Your application is approved. Complete the deposit below to confirm the session.",
+    nextTitle: "secure your session.",
+    nextCopy: "Your requested time is confirmed after the deposit is successfully received.",
+    activeStep: 3,
+  },
+  confirmed: {
+    hero: "confirmed.",
+    summary: "Your deposit has been received and your session is confirmed.",
+    nextTitle: "you’re on the books.",
+    nextCopy: "We have your session and project details. The studio will be in touch if anything else is needed before you arrive.",
+    activeStep: 4,
   },
   declined: {
     hero: "reviewed.",
@@ -93,6 +108,15 @@ const render = (application) => {
   }).join("");
   document.querySelector("[data-next-title]").textContent = state.nextTitle;
   document.querySelector("[data-next-copy]").textContent = state.nextCopy;
+  const depositAction = document.querySelector("[data-deposit-action]");
+  const canPay = ["approved", "payment_pending"].includes(application.status)
+    && application.deposit_status === "pending";
+  depositAction.hidden = !canPay;
+  if (canPay) {
+    document.querySelector("[data-deposit-amount]").textContent = new Intl.NumberFormat("en-US", {
+      style: "currency", currency: "USD",
+    }).format(Number(application.deposit_amount_cents) / 100);
+  }
 
   accessView.hidden = true;
   portal.hidden = false;
@@ -124,12 +148,34 @@ const fail = (message) => {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "This application could not be loaded.");
+      verifiedLastFour = String(lastFour);
       render(payload.application);
     } catch (error) {
       accessError.textContent = error.message;
       button.disabled = false;
       button.innerHTML = "view application <b>↗︎</b>";
       accessForm.querySelector("input").select();
+    }
+  });
+  document.querySelector("[data-pay-deposit]").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const message = document.querySelector("[data-deposit-message]");
+    button.disabled = true;
+    button.textContent = "opening secure checkout…";
+    message.textContent = "";
+    try {
+      const response = await fetch("/api/application-status/checkout", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token, lastFour: verifiedLastFour }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Secure checkout could not be opened.");
+      location.assign(payload.checkoutUrl);
+    } catch (error) {
+      message.textContent = error.message;
+      button.disabled = false;
+      button.innerHTML = "pay deposit securely <b>↗︎</b>";
     }
   });
 })();

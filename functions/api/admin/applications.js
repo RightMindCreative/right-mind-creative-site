@@ -11,7 +11,8 @@ export async function onRequestGet(context) {
       a.first_name, a.last_name, a.artist_name, a.email, a.phone,
       a.stem_count, a.social_links, a.notes, a.google_event_id,
       a.calendar_sync_status, a.email_notification_status,
-      a.decided_at, a.decision_email_status,
+      a.decided_at, a.decision_email_status, a.deposit_amount_cents,
+      a.deposit_status, a.deposit_paid_at,
       COUNT(f.id) AS file_count
     FROM applications a
     LEFT JOIN application_files f ON f.application_id = a.id

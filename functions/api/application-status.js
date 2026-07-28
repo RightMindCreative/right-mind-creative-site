@@ -38,6 +38,7 @@ export async function onRequestPost(context) {
       id, created_at, updated_at, status, decided_at, category, service,
       service_option, preferred_date, preferred_time,
       first_name, last_name, artist_name, phone
+      , deposit_amount_cents, deposit_currency, deposit_status, deposit_paid_at
     FROM applications
     WHERE public_status_token = ?
   `).bind(token).first();

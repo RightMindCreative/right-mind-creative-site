@@ -11,6 +11,8 @@ const decisionDialog = document.querySelector("[data-decision-dialog]");
 const decisionDialogTitle = decisionDialog.querySelector("[data-confirm-title]");
 const decisionDialogCopy = decisionDialog.querySelector("[data-confirm-copy]");
 const decisionConfirm = decisionDialog.querySelector("[data-confirm-decision]");
+const customDepositField = decisionDialog.querySelector("[data-custom-deposit]");
+const customDepositInput = decisionDialog.querySelector("[data-custom-deposit-input]");
 
 let applications = [];
 let selectedId = "";
@@ -70,9 +72,10 @@ const showApp = () => {
 
 const renderList = () => {
   const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-  const pending = applications.filter((application) => !["approved", "declined"].includes(application.status));
+  const completedStatuses = ["approved", "declined", "payment_pending", "confirmed"];
+  const pending = applications.filter((application) => !completedStatuses.includes(application.status));
   const previous = applications.filter((application) => (
-    ["approved", "declined"].includes(application.status)
+    completedStatuses.includes(application.status)
     && new Date(application.decided_at || application.updated_at || application.created_at).getTime() >= thirtyDaysAgo
   ));
   count.textContent = `${pending.length} pending`;
@@ -87,7 +90,7 @@ const renderList = () => {
         <footer>
           <span>${escapeHtml(application.preferred_date ? formatDate(application.preferred_date) : "No calendar request")}</span>
           ${completed
-            ? `<span class="card-decision is-${escapeHtml(application.status)}">${escapeHtml(application.status)}</span>`
+            ? `<span class="card-decision is-${escapeHtml(application.status)}">${escapeHtml(application.status === "confirmed" ? "deposit paid" : application.status === "payment_pending" ? "awaiting deposit" : application.status)}</span>`
             : `<span>${Number(application.file_count) || 0} files</span>`}
         </footer>
       </button>
@@ -221,7 +224,7 @@ const hydrateSocialPreviews = async (container) => {
 };
 
 const renderDecision = (application) => {
-  const decided = ["approved", "declined"].includes(application.status);
+  const decided = ["approved", "declined", "payment_pending", "confirmed"].includes(application.status);
   const emailFailed = decided && application.decision_email_status === "failed";
   return `
     <section class="decision-card" data-decision-card>
@@ -233,7 +236,7 @@ const renderDecision = (application) => {
           <button class="decision-button is-decline" type="button" data-decision="declined" ${decided ? "disabled" : ""}>decline application <b>×</b></button>
         `}
       </div>
-      ${decided ? `<p class="decision-result">Application ${escapeHtml(application.status)}${application.decision_email_status === "sent" ? " · applicant notified" : " · email delivery failed"}</p>` : ""}
+      ${decided ? `<p class="decision-result">Application ${escapeHtml(application.status)}${application.deposit_status === "paid" ? " · deposit paid" : application.decision_email_status === "sent" ? " · applicant notified" : " · email delivery failed"}</p>` : ""}
     </section>
   `;
 };
@@ -346,8 +349,16 @@ detail.addEventListener("click", (event) => {
   if (!decisionButton || !selectedId) return;
   pendingDecision = decisionButton.dataset.decision;
   const approving = pendingDecision === "approved";
+  const application = applications.find((item) => item.id === selectedId);
+  const isPackage = approving && application?.category === "packages";
   decisionDialogTitle.textContent = approving ? "approve this application?" : "decline this application?";
-  decisionDialogCopy.textContent = `This decision will be recorded and ${approving ? "an approval" : "a decline"} email will immediately be sent to the applicant.`;
+  const fixedDeposits = { recording: "$70", production: "$90", mixing: "$150" };
+  decisionDialogCopy.textContent = approving
+    ? `This approval will request a ${isPackage ? "custom" : fixedDeposits[application?.category] || "required"} deposit and immediately email the applicant.`
+    : "This decision will be recorded and a decline email will immediately be sent to the applicant.";
+  customDepositField.hidden = !isPackage;
+  customDepositInput.required = isPackage;
+  customDepositInput.value = "";
   decisionConfirm.textContent = approving ? "yes, approve & send" : "yes, decline & send";
   decisionConfirm.classList.toggle("is-decline", !approving);
   decisionDialog.showModal();
@@ -363,6 +374,11 @@ decisionDialog.addEventListener("click", (event) => {
 decisionConfirm.addEventListener("click", async () => {
   if (!pendingDecision || !selectedId) return;
   const decision = pendingDecision;
+  const customDeposit = customDepositField.hidden ? null : Number(customDepositInput.value);
+  if (!customDepositField.hidden && (!Number.isFinite(customDeposit) || customDeposit < 1)) {
+    customDepositInput.reportValidity();
+    return;
+  }
   const card = detail.querySelector("[data-decision-card]");
   const buttons = card.querySelectorAll("[data-decision]");
   buttons.forEach((button) => { button.disabled = true; });
@@ -371,7 +387,7 @@ decisionConfirm.addEventListener("click", async () => {
   fetch(`/api/admin/applications/${encodeURIComponent(selectedId)}/decision`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify({ decision, customDeposit }),
   }).then(async (response) => {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "The decision could not be completed.");

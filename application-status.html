@@ -11,8 +11,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=9" />
-    <link rel="stylesheet" href="/application-status.css?v=3" />
-    <script src="/application-status.js?v=2" defer></script>
+    <link rel="stylesheet" href="/application-status.css?v=4" />
+    <script src="/application-status.js?v=3" defer></script>
   </head>
   <body class="status-page">
     <header class="status-header">
@@ -75,6 +75,11 @@
             <p>03 / What happens next</p>
             <h2 data-next-title></h2>
             <p data-next-copy></p>
+            <div class="deposit-action" data-deposit-action hidden>
+              <strong data-deposit-amount></strong>
+              <button type="button" data-pay-deposit>pay deposit securely <b>↗︎</b></button>
+              <small data-deposit-message role="status"></small>
+            </div>
             <a href="mailto:welcome@rightmindcreative.co">welcome@rightmindcreative.co <b>↗︎</b></a>
           </section>
         </section>
