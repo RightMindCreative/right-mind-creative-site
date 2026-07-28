@@ -335,6 +335,9 @@ decisionConfirm.addEventListener("click", async () => {
   }).catch((error) => {
     decisionDialogCopy.textContent = error.message;
     buttons.forEach((button) => { button.disabled = false; });
+    decisionConfirm.textContent = decision === "approved"
+      ? "retry approval email"
+      : "retry decline email";
   }).finally(() => {
     decisionConfirm.disabled = false;
   });
