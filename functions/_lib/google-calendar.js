@@ -1,6 +1,9 @@
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_FREE_BUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy";
-const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
+const GOOGLE_CALENDAR_SCOPE = [
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/calendar.freebusy",
+].join(" ");
 
 const encodeBase64Url = (value) => {
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
@@ -26,16 +29,18 @@ const importPrivateKey = async (pem) => {
   );
 };
 
-const createAssertion = async (clientEmail, privateKey) => {
+const createAssertion = async (clientEmail, privateKey, delegatedUser) => {
   const now = Math.floor(Date.now() / 1000);
   const header = encodeBase64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const claim = encodeBase64Url(JSON.stringify({
+  const claims = {
     iss: clientEmail,
     scope: GOOGLE_CALENDAR_SCOPE,
     aud: GOOGLE_TOKEN_URL,
     iat: now,
     exp: now + 3600,
-  }));
+  };
+  if (delegatedUser) claims.sub = delegatedUser;
+  const claim = encodeBase64Url(JSON.stringify(claims));
   const unsigned = `${header}.${claim}`;
   const key = await importPrivateKey(privateKey);
   const signature = await crypto.subtle.sign(
@@ -50,6 +55,7 @@ const getAccessToken = async (env) => {
   const assertion = await createAssertion(
     env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
     env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
+    env.GOOGLE_IMPERSONATED_USER,
   );
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -90,4 +96,25 @@ export const getBusyPeriods = async (env, timeMin, timeMax) => {
   const calendar = result.calendars?.[env.GOOGLE_CALENDAR_ID];
   if (!calendar || calendar.errors?.length) throw new Error("Google Calendar could not be read.");
   return calendar.busy || [];
+};
+
+export const createCalendarEvent = async (env, event) => {
+  const accessToken = await getAccessToken(env);
+  const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?sendUpdates=none`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(event),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Google event creation failed (${response.status}): ${detail.slice(0, 500)}`);
+  }
+  return response.json();
 };

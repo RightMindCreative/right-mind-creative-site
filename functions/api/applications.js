@@ -1,3 +1,8 @@
+import {
+  addApplicationToCalendar,
+  sendApplicationEmail,
+} from "../_lib/application-notifications.js";
+
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 50 * 1024 * 1024;
 const ALLOWED_FILE_TYPES = new Set([
@@ -107,6 +112,8 @@ export async function onRequestPost(context) {
 
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
+  application.id = id;
+  application.createdAt = createdAt;
   const storedFiles = [];
 
   try {
@@ -149,7 +156,53 @@ export async function onRequestPost(context) {
     return json({ error: "We couldn’t save the application. Please try again." }, 500);
   }
 
-  return json({ id, status: "received" }, 201);
+  const integrations = {
+    calendar: { status: "pending" },
+    email: { status: "pending" },
+  };
+
+  try {
+    integrations.calendar = await addApplicationToCalendar(application, storedFiles, context.env);
+  } catch (error) {
+    integrations.calendar = { status: "failed" };
+    console.error("Application calendar sync failed", { id, error });
+  }
+
+  try {
+    integrations.email = await sendApplicationEmail(application, storedFiles, context.env);
+  } catch (error) {
+    integrations.email = { status: "failed" };
+    console.error("Application email notification failed", { id, error });
+  }
+
+  const calendarError = integrations.calendar.status === "failed"
+    ? "Calendar event creation failed; retry required."
+    : null;
+  const emailError = integrations.email.status === "failed"
+    ? "Email notification failed; retry required."
+    : null;
+  await context.env.APPLICATIONS_DB.prepare(`
+    UPDATE applications
+    SET updated_at = ?,
+        google_event_id = ?,
+        calendar_sync_status = ?,
+        calendar_sync_error = ?,
+        email_notification_status = ?,
+        email_notification_error = ?
+    WHERE id = ?
+  `).bind(
+    new Date().toISOString(),
+    integrations.calendar.eventId || null,
+    integrations.calendar.status,
+    calendarError,
+    integrations.email.status,
+    emailError,
+    id,
+  ).run().catch((error) => {
+    console.error("Application integration status update failed", { id, error });
+  });
+
+  return json({ id, status: "received", integrations }, 201);
 }
 
 export function onRequest(context) {
