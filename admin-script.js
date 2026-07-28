@@ -6,9 +6,14 @@ const list = document.querySelector("[data-list]");
 const detail = document.querySelector("[data-detail]");
 const count = document.querySelector("[data-count]");
 const logout = document.querySelector("[data-logout]");
+const decisionDialog = document.querySelector("[data-decision-dialog]");
+const decisionDialogTitle = decisionDialog.querySelector("[data-confirm-title]");
+const decisionDialogCopy = decisionDialog.querySelector("[data-confirm-copy]");
+const decisionConfirm = decisionDialog.querySelector("[data-confirm-decision]");
 
 let applications = [];
 let selectedId = "";
+let pendingDecision = "";
 const mobileReview = window.matchMedia("(max-width: 900px)");
 
 const escapeHtml = (value) => String(value ?? "")
@@ -149,21 +154,13 @@ const renderSocial = (value) => {
 
 const renderDecision = (application) => {
   const decided = ["approved", "declined"].includes(application.status);
-  const emailSent = application.decision_email_status === "sent";
-  const message = decided
-    ? `Decision recorded ${application.decided_at ? formatDate(application.decided_at) : ""}${emailSent ? " · applicant email sent" : " · email needs attention"}`
-    : "Choosing a decision will immediately email the applicant.";
   return `
     <section class="decision-card" data-decision-card>
-      <div>
-        <p class="detail-kicker">Decision</p>
-        <h3>${decided ? `application ${escapeHtml(application.status)}.` : "ready to decide?"}</h3>
-        <p class="decision-note" data-decision-note>${escapeHtml(message)}</p>
-      </div>
       <div class="decision-actions">
         <button class="decision-button is-approve" type="button" data-decision="approved" ${decided ? "disabled" : ""}>approve application <b>✓</b></button>
         <button class="decision-button is-decline" type="button" data-decision="declined" ${decided ? "disabled" : ""}>decline application <b>×</b></button>
       </div>
+      ${decided ? `<p class="decision-result">Application ${escapeHtml(application.status)}${application.decision_email_status === "sent" ? " · applicant notified" : ""}</p>` : ""}
     </section>
   `;
 };
@@ -191,9 +188,9 @@ const renderDetail = ({ application, files }) => {
       ${detailField("Stems / trackouts", application.stem_count)}
       ${detailField("Additional information", application.notes, true)}
     </div>
-    ${renderDecision(application)}
     <section class="review-section"><div class="review-section-head"><div><p>03 / Submitted material</p><h3>listen &amp; look.</h3></div></div>${renderFiles(files)}</section>
     <section class="review-section"><div class="review-section-head"><div><p>04 / Online presence</p><h3>social preview.</h3></div></div>${renderSocial(application.social_links)}</section>
+    ${renderDecision(application)}
   `;
 };
 
@@ -269,14 +266,30 @@ detail.addEventListener("click", (event) => {
   }
   const decisionButton = event.target.closest("[data-decision]");
   if (!decisionButton || !selectedId) return;
-  const decision = decisionButton.dataset.decision;
-  const verb = decision === "approved" ? "approve" : "decline";
-  if (!window.confirm(`Are you sure you want to ${verb} this application? This will immediately email the applicant.`)) return;
-  const card = decisionButton.closest("[data-decision-card]");
-  const note = card.querySelector("[data-decision-note]");
+  pendingDecision = decisionButton.dataset.decision;
+  const approving = pendingDecision === "approved";
+  decisionDialogTitle.textContent = approving ? "approve this application?" : "decline this application?";
+  decisionDialogCopy.textContent = `This decision will be recorded and ${approving ? "an approval" : "a decline"} email will immediately be sent to the applicant.`;
+  decisionConfirm.textContent = approving ? "yes, approve & send" : "yes, decline & send";
+  decisionConfirm.classList.toggle("is-decline", !approving);
+  decisionDialog.showModal();
+});
+
+decisionDialog.addEventListener("click", (event) => {
+  if (event.target === decisionDialog || event.target.closest("[data-cancel-decision]")) {
+    pendingDecision = "";
+    decisionDialog.close();
+  }
+});
+
+decisionConfirm.addEventListener("click", async () => {
+  if (!pendingDecision || !selectedId) return;
+  const decision = pendingDecision;
+  const card = detail.querySelector("[data-decision-card]");
   const buttons = card.querySelectorAll("[data-decision]");
   buttons.forEach((button) => { button.disabled = true; });
-  note.textContent = "Saving decision and sending applicant email…";
+  decisionConfirm.disabled = true;
+  decisionConfirm.textContent = "saving & sending…";
   fetch(`/api/admin/applications/${encodeURIComponent(selectedId)}/decision`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -291,10 +304,14 @@ detail.addEventListener("click", (event) => {
       listItem.decision_email_status = payload.application.decision_email_status;
     }
     renderList();
+    pendingDecision = "";
+    decisionDialog.close();
     await selectApplication(selectedId, false);
   }).catch((error) => {
-    note.textContent = error.message;
+    decisionDialogCopy.textContent = error.message;
     buttons.forEach((button) => { button.disabled = false; });
+  }).finally(() => {
+    decisionConfirm.disabled = false;
   });
 });
 

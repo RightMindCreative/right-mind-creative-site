@@ -10,8 +10,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=5" />
-    <link rel="stylesheet" href="/admin.css?v=6" />
-    <script src="/admin-script.js?v=4" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=7" />
+    <script src="/admin-script.js?v=5" defer></script>
   </head>
   <body class="review-page">
     <div class="review-login" data-login>
@@ -48,5 +48,17 @@
         </section>
       </main>
     </div>
+
+    <dialog class="decision-dialog" data-decision-dialog>
+      <div class="decision-dialog-card">
+        <p class="detail-kicker">Confirm decision</p>
+        <h2 data-confirm-title>confirm this decision?</h2>
+        <p data-confirm-copy>This will immediately notify the applicant.</p>
+        <div class="decision-dialog-actions">
+          <button type="button" data-confirm-decision>confirm &amp; send</button>
+          <button type="button" data-cancel-decision>go back</button>
+        </div>
+      </div>
+    </dialog>
   </body>
 </html>
