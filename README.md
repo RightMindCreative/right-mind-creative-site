@@ -32,3 +32,6 @@ Then open:
 
 See [docs/production-foundation.md](docs/production-foundation.md) for the
 planned environments and release gate.
+
+See [docs/cloudflare-staging.md](docs/cloudflare-staging.md) for the Pages
+preview configuration and initial deployment gate.
