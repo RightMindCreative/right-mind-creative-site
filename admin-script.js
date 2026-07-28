@@ -135,37 +135,66 @@ const renderFiles = (files) => {
 
 const socialUrls = (value) => String(value || "").split(/[\s,\n]+/).map((item) => item.trim()).filter((item) => /^https?:\/\//i.test(item));
 
-const socialEmbed = (url) => {
+const socialPreview = (url) => {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.replace(/^www\./, "");
-    if (host === "youtu.be") return `https://www.youtube-nocookie.com/embed/${parsed.pathname.slice(1)}`;
-    if (host.endsWith("youtube.com")) return `https://www.youtube-nocookie.com/embed/${parsed.searchParams.get("v") || parsed.pathname.split("/").filter(Boolean).pop()}`;
-    if (host.endsWith("spotify.com")) return `https://open.spotify.com/embed/${parsed.pathname.split("/").filter(Boolean).join("/")}`;
+    const pathParts = parsed.pathname.split("/").filter(Boolean);
+    const fallback = {
+      embed: "",
+      platform: host.split(".").slice(-2, -1)[0] || host,
+      label: pathParts.at(-1)?.replace(/^@/, "") || host,
+    };
+    if (host === "youtu.be" && pathParts[0]) {
+      return { ...fallback, embed: `https://www.youtube-nocookie.com/embed/${pathParts[0]}`, platform: "YouTube" };
+    }
+    if (host.endsWith("youtube.com")) {
+      const videoId = parsed.searchParams.get("v")
+        || (["shorts", "embed"].includes(pathParts[0]) ? pathParts[1] : "");
+      return { ...fallback, embed: videoId ? `https://www.youtube-nocookie.com/embed/${videoId}` : "", platform: "YouTube" };
+    }
+    if (host.endsWith("spotify.com") && pathParts.length >= 2) {
+      return { ...fallback, embed: `https://open.spotify.com/embed/${pathParts.join("/")}`, platform: "Spotify" };
+    }
     if (host.endsWith("instagram.com")) {
-      const parts = parsed.pathname.split("/").filter(Boolean);
-      if (["p", "reel", "tv"].includes(parts[0]) && parts[1]) return `https://www.instagram.com/${parts[0]}/${parts[1]}/embed`;
+      const embed = ["p", "reel", "tv"].includes(pathParts[0]) && pathParts[1]
+        ? `https://www.instagram.com/${pathParts[0]}/${pathParts[1]}/embed`
+        : "";
+      return { ...fallback, embed, platform: "Instagram" };
     }
     if (host.endsWith("tiktok.com")) {
       const id = parsed.pathname.match(/video\/(\d+)/)?.[1];
-      if (id) return `https://www.tiktok.com/player/v1/${id}`;
+      return { ...fallback, embed: id ? `https://www.tiktok.com/player/v1/${id}` : "", platform: "TikTok" };
     }
-    if (host.endsWith("soundcloud.com")) return `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&color=%23f1ece4`;
-    return url;
+    if (host.endsWith("soundcloud.com")) {
+      return { ...fallback, embed: `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&color=%23f1ece4`, platform: "SoundCloud" };
+    }
+    return fallback;
   } catch {
-    return "";
+    return { embed: "", platform: "Social link", label: url };
   }
 };
 
 const renderSocial = (value) => {
   const urls = socialUrls(value);
   if (!urls.length) return `<div class="review-message">No social links were included.</div>`;
-  return `<div class="social-grid">${urls.map((url) => `
+  return `<div class="social-grid">${urls.map((url) => {
+    const preview = socialPreview(url);
+    const media = preview.embed
+      ? `<iframe title="${escapeHtml(preview.platform)} preview" src="${escapeHtml(preview.embed)}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>`
+      : `<a class="social-placeholder" href="${escapeHtml(url)}" target="_blank" rel="noopener">
+          <span>${escapeHtml(preview.platform)}</span>
+          <strong>${escapeHtml(preview.label)}</strong>
+          <small>This profile protects its preview. Open it directly to view the latest work.</small>
+          <b>↗︎</b>
+        </a>`;
+    return `
     <article class="social-card">
-      <iframe title="Social preview" src="${escapeHtml(socialEmbed(url))}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
+      ${media}
       <div class="social-info"><span>${escapeHtml(url)}</span><a href="${escapeHtml(url)}" target="_blank" rel="noopener">open ↗︎</a></div>
     </article>
-  `).join("")}</div>`;
+  `;
+  }).join("")}</div>`;
 };
 
 const renderDecision = (application) => {

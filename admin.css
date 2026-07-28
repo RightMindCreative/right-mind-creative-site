@@ -84,7 +84,15 @@
 .review-login{padding-top:max(24px,env(safe-area-inset-top));padding-right:max(24px,env(safe-area-inset-right));padding-bottom:max(24px,env(safe-area-inset-bottom));padding-left:max(24px,env(safe-area-inset-left))}
 .review-header{padding-top:calc(20px + env(safe-area-inset-top));padding-left:max(var(--pad),env(safe-area-inset-left));padding-right:max(var(--pad),env(safe-area-inset-right))}
 .application-detail{padding-bottom:max(clamp(40px,6vw,90px),calc(30px + env(safe-area-inset-bottom)))}
+.social-placeholder{position:relative;min-height:430px;display:flex;flex-direction:column;justify-content:flex-end;padding:32px;color:#fff;text-decoration:none;background:radial-gradient(circle at 82% 18%,rgba(255,255,255,.18),transparent 30%),linear-gradient(145deg,#292724,#090909 72%);overflow:hidden}
+.social-placeholder:before{content:"";position:absolute;width:280px;aspect-ratio:1;right:-95px;top:-105px;border:1px solid rgba(255,255,255,.2);border-radius:45% 55% 62% 38%/48% 42% 58% 52%;background:rgba(255,255,255,.04)}
+.social-placeholder>*{position:relative}
+.social-placeholder span{margin-bottom:auto;font-size:9px;text-transform:uppercase;letter-spacing:.18em;color:#aaa}
+.social-placeholder strong{font-size:clamp(30px,4vw,54px);line-height:.95;letter-spacing:-.055em;overflow-wrap:anywhere}
+.social-placeholder small{max-width:370px;margin-top:18px;color:#aaa;font-size:11px;line-height:1.65}
+.social-placeholder b{position:absolute;right:28px;top:26px;font-size:20px;font-weight:400}
 @media(max-width:620px){
   .login-card input{font-size:16px}
   .review-header{padding-top:calc(16px + env(safe-area-inset-top))}
+  .social-placeholder{min-height:300px;padding:24px}
 }
