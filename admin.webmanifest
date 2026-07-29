@@ -1,0 +1,25 @@
+{
+  "name": "Right Mind Creative — Application Review",
+  "short_name": "RMC Review",
+  "description": "Private application review desk for Right Mind Creative.",
+  "id": "/admin",
+  "start_url": "/admin",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#080808",
+  "theme_color": "#080808",
+  "icons": [
+    {
+      "src": "/media/icons/application-review-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/media/icons/application-review-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
