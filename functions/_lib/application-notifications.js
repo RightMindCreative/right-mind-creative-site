@@ -90,6 +90,7 @@ export const buildApplicationEvent = (application, files, env) => {
     summary: `SESSION REQUEST · ${application.service} · ${artist}`,
     description: plainDescription(application, files),
     colorId: env.APPLICATION_CALENDAR_COLOR_ID || REQUEST_COLOR_ID,
+    eventLabelName: "Tangerine",
     transparency: "transparent",
     ...eventDates(application, application.createdAt, env.BOOKING_TIME_ZONE || DEFAULT_TIME_ZONE),
   };

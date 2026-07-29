@@ -87,6 +87,7 @@ export async function onRequestPost(context) {
         colorId: confirmed
           ? (context.env.BOOKING_CALENDAR_COLOR_ID || CONFIRMED_BOOKING_COLOR_ID)
           : (context.env.DEPOSIT_PENDING_CALENDAR_COLOR_ID || DEPOSIT_PENDING_COLOR_ID),
+        eventLabelName: confirmed ? "Basil" : "Citron",
         transparency: confirmed ? "opaque" : "transparent",
       });
     }

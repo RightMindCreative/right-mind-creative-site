@@ -40,6 +40,7 @@ const confirmPayment = async (context, session) => {
       await updateCalendarEvent(context.env, application.google_event_id, {
         summary: `BOOKED · ${application.service} · ${artist}`,
         colorId: context.env.BOOKING_CALENDAR_COLOR_ID || CONFIRMED_BOOKING_COLOR_ID,
+        eventLabelName: "Basil",
         transparency: "opaque",
       });
     } catch (error) {

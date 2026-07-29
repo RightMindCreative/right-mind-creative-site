@@ -4,6 +4,7 @@ const GOOGLE_CALENDAR_SCOPE = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.freebusy",
 ].join(" ");
+const labelCache = new Map();
 
 const encodeBase64Url = (value) => {
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
@@ -98,18 +99,49 @@ export const getBusyPeriods = async (env, timeMin, timeMax) => {
   return calendar.busy || [];
 };
 
-export const createCalendarEvent = async (env, event) => {
+const resolveEventLabelId = async (env, labelName) => {
+  if (!labelName) return null;
+  const cacheKey = `${env.GOOGLE_CALENDAR_ID}:${String(labelName).toLowerCase()}`;
+  if (labelCache.has(cacheKey)) return labelCache.get(cacheKey);
   const accessToken = await getAccessToken(env);
   const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
   const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?sendUpdates=none`,
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}`,
+    { headers: { authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Google calendar labels could not be read (${response.status}): ${detail.slice(0, 500)}`);
+  }
+  const calendar = await response.json();
+  const label = (calendar.labelProperties?.eventLabels || []).find(
+    (candidate) => String(candidate.name || "").toLowerCase() === String(labelName).toLowerCase(),
+  );
+  const id = label?.id || null;
+  labelCache.set(cacheKey, id);
+  return id;
+};
+
+const withEventLabel = async (env, event) => {
+  const { eventLabelName, ...payload } = event;
+  if (!eventLabelName) return payload;
+  const eventLabelId = await resolveEventLabelId(env, eventLabelName);
+  return eventLabelId ? { ...payload, eventLabelId } : payload;
+};
+
+export const createCalendarEvent = async (env, event) => {
+  const accessToken = await getAccessToken(env);
+  const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
+  const payload = await withEventLabel(env, event);
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?sendUpdates=none&eventLabelVersion=1`,
     {
       method: "POST",
       headers: {
         authorization: `Bearer ${accessToken}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify(event),
+      body: JSON.stringify(payload),
     },
   );
   if (!response.ok) {
@@ -122,15 +154,16 @@ export const createCalendarEvent = async (env, event) => {
 export const updateCalendarEvent = async (env, eventId, changes) => {
   const accessToken = await getAccessToken(env);
   const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
+  const payload = await withEventLabel(env, changes);
   const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}?sendUpdates=none`,
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}?sendUpdates=none&eventLabelVersion=1`,
     {
       method: "PATCH",
       headers: {
         authorization: `Bearer ${accessToken}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify(changes),
+      body: JSON.stringify(payload),
     },
   );
   if (!response.ok) {

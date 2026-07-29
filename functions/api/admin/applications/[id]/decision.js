@@ -71,6 +71,7 @@ export async function onRequestPost(context) {
         await updateCalendarEvent(context.env, application.google_event_id, {
           summary: `DEPOSIT PENDING · ${application.service} · ${artist}`,
           colorId: context.env.DEPOSIT_PENDING_CALENDAR_COLOR_ID || DEPOSIT_PENDING_COLOR_ID,
+          eventLabelName: "Citron",
           transparency: "transparent",
         });
         await context.env.APPLICATIONS_DB.prepare(`
