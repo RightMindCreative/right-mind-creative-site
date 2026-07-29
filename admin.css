@@ -101,3 +101,13 @@
   .review-header{padding-top:calc(16px + env(safe-area-inset-top))}
   .social-placeholder{min-height:300px;padding:24px}
 }
+@media(max-width:620px){
+  .review-page.is-login{height:100svh;height:100dvh;overflow:hidden;overscroll-behavior:none}
+  .review-page.is-login .review-login{box-sizing:border-box;height:100svh;height:100dvh;min-height:0;overflow:hidden;padding-top:max(14px,env(safe-area-inset-top));padding-right:max(16px,env(safe-area-inset-right));padding-bottom:max(14px,env(safe-area-inset-bottom));padding-left:max(16px,env(safe-area-inset-left))}
+  .review-page.is-login .login-card{box-sizing:border-box;max-height:100%;padding:clamp(24px,5.5dvh,42px) 24px;border-radius:30px 38px 28px 34px;overflow:hidden}
+  .review-page.is-login .login-card .wordmark{margin:clamp(16px,3dvh,24px) 0 clamp(24px,5dvh,42px)}
+  .review-page.is-login .login-card h1{font-size:clamp(48px,14vw,68px)}
+  .review-page.is-login .login-card>p:not(.review-kicker){margin:clamp(18px,3.5dvh,28px) 0;line-height:1.5}
+  .review-page.is-login .login-card input{font-size:24px;letter-spacing:.55em;text-align:center}
+  .review-page.is-login .login-card button{margin-top:14px}
+}

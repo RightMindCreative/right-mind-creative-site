@@ -17,10 +17,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=9" />
-    <link rel="stylesheet" href="/admin.css?v=11" />
-    <script src="/admin-script.js?v=8" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=12" />
+    <script src="/admin-script.js?v=9" defer></script>
   </head>
-  <body class="review-page">
+  <body class="review-page is-login">
     <div class="review-login" data-login>
       <form class="login-card" action="/api/admin/session" method="post" autocomplete="on">
         <p class="review-kicker">Private studio desk</p>
@@ -28,7 +28,7 @@
         <h1>review the<br /><em>work.</em></h1>
         <p>Applications, private files, and project context—kept in one place.</p>
         <input class="password-username" name="username" type="text" value="right-mind-review" autocomplete="username" tabindex="-1" aria-hidden="true" />
-        <label><span>Review password</span><input name="password" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" required /></label>
+        <label><span>4-digit review passcode</span><input name="password" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" autocapitalize="none" spellcheck="false" aria-label="4-digit review passcode" required /></label>
         <p class="login-error" role="alert"></p>
         <button type="submit">enter the desk <b>↗︎</b></button>
       </form>

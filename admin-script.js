@@ -13,6 +13,7 @@ const decisionDialogCopy = decisionDialog.querySelector("[data-confirm-copy]");
 const decisionConfirm = decisionDialog.querySelector("[data-confirm-decision]");
 const customDepositField = decisionDialog.querySelector("[data-custom-deposit]");
 const customDepositInput = decisionDialog.querySelector("[data-custom-deposit-input]");
+const passcodeInput = loginForm.elements.password;
 
 let applications = [];
 let selectedId = "";
@@ -63,12 +64,18 @@ const request = async (url, options) => {
 const showLogin = () => {
   appView.hidden = true;
   loginView.hidden = false;
+  document.body.classList.add("is-login");
 };
 
 const showApp = () => {
   loginView.hidden = true;
   appView.hidden = false;
+  document.body.classList.remove("is-login");
 };
+
+passcodeInput.addEventListener("input", () => {
+  passcodeInput.value = passcodeInput.value.replace(/\D/g, "").slice(0, 4);
+});
 
 const renderList = () => {
   const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);

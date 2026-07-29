@@ -15,10 +15,10 @@ export async function onRequestPost(context) {
   try {
     body = await context.request.json();
   } catch {
-    return json({ error: "Enter the review password." }, 400);
+    return json({ error: "Enter the 4-digit review passcode." }, 400);
   }
   if (!await passwordMatches(body.password, context.env)) {
-    return json({ error: "That password is not correct." }, 401);
+    return json({ error: "That passcode is not correct." }, 401);
   }
   return json(
     { authenticated: true },

@@ -62,6 +62,7 @@ export const clearSessionCookie = () => (
 
 export const passwordMatches = async (password, env) => {
   if (!env.ADMIN_REVIEW_PASSWORD) return false;
+  if (!/^\d{4}$/.test(String(password || ""))) return false;
   const expected = await sign("admin-password", env.ADMIN_REVIEW_PASSWORD);
   const received = await sign("admin-password", String(password || ""));
   return same(expected, received);
