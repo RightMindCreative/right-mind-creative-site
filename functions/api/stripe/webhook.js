@@ -1,3 +1,4 @@
+import { CONFIRMED_BOOKING_COLOR_ID } from "../../_lib/application-notifications.js";
 import { updateCalendarEvent } from "../../_lib/google-calendar.js";
 import { sendPaymentConfirmationEmail } from "../../_lib/payment-confirmation-email.js";
 import { verifyStripeEvent } from "../../_lib/stripe.js";
@@ -38,7 +39,7 @@ const confirmPayment = async (context, session) => {
       const artist = application.artist_name || `${application.first_name} ${application.last_name}`.trim();
       await updateCalendarEvent(context.env, application.google_event_id, {
         summary: `BOOKED · ${application.service} · ${artist}`,
-        colorId: context.env.BOOKING_CALENDAR_COLOR_ID || "10",
+        colorId: context.env.BOOKING_CALENDAR_COLOR_ID || CONFIRMED_BOOKING_COLOR_ID,
         transparency: "opaque",
       });
     } catch (error) {

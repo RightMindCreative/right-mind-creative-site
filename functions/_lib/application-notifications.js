@@ -1,6 +1,8 @@
 import { calendarIsConfigured, createCalendarEvent } from "./google-calendar.js";
 
 const REQUEST_COLOR_ID = "6";
+export const DEPOSIT_PENDING_COLOR_ID = "5";
+export const CONFIRMED_BOOKING_COLOR_ID = "10";
 const DEFAULT_TIME_ZONE = "America/Chicago";
 
 const normalizeTime = (value) => {

@@ -1,5 +1,10 @@
 import { requireAdmin } from "../../_lib/admin-auth.js";
-import { addApplicationToCalendar } from "../../_lib/application-notifications.js";
+import {
+  addApplicationToCalendar,
+  CONFIRMED_BOOKING_COLOR_ID,
+  DEPOSIT_PENDING_COLOR_ID,
+} from "../../_lib/application-notifications.js";
+import { deleteCalendarEvent, updateCalendarEvent } from "../../_lib/google-calendar.js";
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
@@ -56,13 +61,42 @@ export async function onRequestPost(context) {
   }));
 
   try {
-    const result = await addApplicationToCalendar(application, storedFiles, context.env);
+    if (row.status === "declined") {
+      if (row.google_event_id) await deleteCalendarEvent(context.env, row.google_event_id);
+      await context.env.APPLICATIONS_DB.prepare(`
+        UPDATE applications
+        SET updated_at = ?, google_event_id = NULL,
+            calendar_sync_status = 'deleted', calendar_sync_error = NULL
+        WHERE id = ?
+      `).bind(new Date().toISOString(), id).run();
+      return json({ id, calendar: { status: "deleted" } });
+    }
+
+    let eventId = row.google_event_id;
+    let result = { status: "sent", eventId };
+    if (!eventId) {
+      result = await addApplicationToCalendar(application, storedFiles, context.env);
+      eventId = result.eventId;
+    }
+
+    if (eventId && ["approved", "payment_pending", "confirmed"].includes(row.status)) {
+      const artist = row.artist_name || `${row.first_name} ${row.last_name}`.trim();
+      const confirmed = row.status === "confirmed" || row.deposit_status === "paid";
+      await updateCalendarEvent(context.env, eventId, {
+        summary: `${confirmed ? "BOOKED" : "DEPOSIT PENDING"} · ${row.service} · ${artist}`,
+        colorId: confirmed
+          ? (context.env.BOOKING_CALENDAR_COLOR_ID || CONFIRMED_BOOKING_COLOR_ID)
+          : (context.env.DEPOSIT_PENDING_CALENDAR_COLOR_ID || DEPOSIT_PENDING_COLOR_ID),
+        transparency: confirmed ? "opaque" : "transparent",
+      });
+    }
+
     await context.env.APPLICATIONS_DB.prepare(`
       UPDATE applications
       SET updated_at = ?, google_event_id = ?, calendar_sync_status = ?, calendar_sync_error = NULL
       WHERE id = ?
-    `).bind(new Date().toISOString(), result.eventId || null, result.status, id).run();
-    return json({ id, calendar: result });
+    `).bind(new Date().toISOString(), eventId || null, result.status, id).run();
+    return json({ id, calendar: { ...result, eventId } });
   } catch (error) {
     await context.env.APPLICATIONS_DB.prepare(`
       UPDATE applications

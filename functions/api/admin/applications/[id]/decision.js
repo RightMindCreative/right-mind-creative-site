@@ -1,6 +1,8 @@
 import { json, requireAdmin } from "../../../../_lib/admin-auth.js";
+import { DEPOSIT_PENDING_COLOR_ID } from "../../../../_lib/application-notifications.js";
 import { decisionEmailIsConfigured, sendDecisionEmail } from "../../../../_lib/decision-email.js";
 import { depositForApplication } from "../../../../_lib/deposits.js";
+import { deleteCalendarEvent, updateCalendarEvent } from "../../../../_lib/google-calendar.js";
 
 const validDecisions = new Set(["approved", "declined"]);
 
@@ -52,6 +54,50 @@ export async function onRequestPost(context) {
     decision, decidedAt, decidedAt, statusToken, depositAmount,
     decision === "approved" ? "pending" : "not_required", application.id,
   ).run();
+
+  if (application.google_event_id) {
+    try {
+      if (decision === "declined") {
+        await deleteCalendarEvent(context.env, application.google_event_id);
+        await context.env.APPLICATIONS_DB.prepare(`
+          UPDATE applications
+          SET google_event_id = NULL, calendar_sync_status = 'deleted',
+              calendar_sync_error = NULL, updated_at = ?
+          WHERE id = ?
+        `).bind(new Date().toISOString(), application.id).run();
+      } else {
+        const artist = application.artist_name
+          || `${application.first_name} ${application.last_name}`.trim();
+        await updateCalendarEvent(context.env, application.google_event_id, {
+          summary: `DEPOSIT PENDING · ${application.service} · ${artist}`,
+          colorId: context.env.DEPOSIT_PENDING_CALENDAR_COLOR_ID || DEPOSIT_PENDING_COLOR_ID,
+          transparency: "transparent",
+        });
+        await context.env.APPLICATIONS_DB.prepare(`
+          UPDATE applications
+          SET calendar_sync_status = 'sent', calendar_sync_error = NULL, updated_at = ?
+          WHERE id = ?
+        `).bind(new Date().toISOString(), application.id).run();
+      }
+    } catch (error) {
+      await context.env.APPLICATIONS_DB.prepare(`
+        UPDATE applications
+        SET calendar_sync_status = 'failed', calendar_sync_error = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(
+        String(error.message || error).slice(0, 500), new Date().toISOString(), application.id,
+      ).run();
+      console.error("Decision calendar sync failed", {
+        applicationId: application.id, decision, error,
+      });
+    }
+  } else if (decision === "declined") {
+    await context.env.APPLICATIONS_DB.prepare(`
+      UPDATE applications
+      SET calendar_sync_status = 'deleted', calendar_sync_error = NULL, updated_at = ?
+      WHERE id = ?
+    `).bind(new Date().toISOString(), application.id).run();
+  }
 
   try {
     const message = await sendDecisionEmail(context.env, application, decision, statusUrl);

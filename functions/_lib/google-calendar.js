@@ -139,3 +139,19 @@ export const updateCalendarEvent = async (env, eventId, changes) => {
   }
   return response.json();
 };
+
+export const deleteCalendarEvent = async (env, eventId) => {
+  const accessToken = await getAccessToken(env);
+  const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}?sendUpdates=none`,
+    {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${accessToken}` },
+    },
+  );
+  if (!response.ok && response.status !== 404 && response.status !== 410) {
+    const detail = await response.text();
+    throw new Error(`Google event deletion failed (${response.status}): ${detail.slice(0, 500)}`);
+  }
+};
