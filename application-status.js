@@ -131,8 +131,36 @@ const fail = (message) => {
 };
 
 (() => {
-  const token = new URLSearchParams(location.search).get("token") || "";
+  const params = new URLSearchParams(location.search);
+  const token = params.get("token") || "";
+  const returningFromPayment = params.get("payment") === "success";
+  const sessionKey = `rmc-status-${token}`;
   if (!token) return fail("Open the full private link included in your application email.");
+
+  const loadApplication = async (lastFour, { paymentReturn = false } = {}) => {
+    let application;
+    for (let attempt = 0; attempt < (paymentReturn ? 6 : 1); attempt += 1) {
+      const response = await fetch("/api/application-status", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token, lastFour }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "This application could not be loaded.");
+      application = payload.application;
+      if (!paymentReturn || application.status === "confirmed") break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    verifiedLastFour = String(lastFour);
+    sessionStorage.setItem(sessionKey, verifiedLastFour);
+    render(application);
+    if (paymentReturn) {
+      history.replaceState(null, "", `/application-status?token=${encodeURIComponent(token)}`);
+      requestAnimationFrame(() => document.querySelector(".status-next-card")
+        .scrollIntoView({ behavior: "smooth", block: "center" }));
+    }
+  };
+
   accessForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     accessError.textContent = "";
@@ -141,15 +169,7 @@ const fail = (message) => {
     button.textContent = "verifying…";
     const lastFour = new FormData(accessForm).get("lastFour");
     try {
-      const response = await fetch("/api/application-status", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token, lastFour }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "This application could not be loaded.");
-      verifiedLastFour = String(lastFour);
-      render(payload.application);
+      await loadApplication(lastFour);
     } catch (error) {
       accessError.textContent = error.message;
       button.disabled = false;
@@ -171,6 +191,7 @@ const fail = (message) => {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Secure checkout could not be opened.");
+      sessionStorage.setItem(sessionKey, verifiedLastFour);
       location.assign(payload.checkoutUrl);
     } catch (error) {
       message.textContent = error.message;
@@ -178,4 +199,10 @@ const fail = (message) => {
       button.innerHTML = "pay deposit securely <b>↗︎</b>";
     }
   });
+
+  const savedLastFour = sessionStorage.getItem(sessionKey);
+  if (returningFromPayment && /^[0-9]{4}$/.test(savedLastFour || "")) {
+    accessView.hidden = true;
+    loadApplication(savedLastFour, { paymentReturn: true }).catch((error) => fail(error.message));
+  }
 })();
