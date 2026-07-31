@@ -1,4 +1,5 @@
 import { addApplicationToCalendar } from "../_lib/application-notifications.js";
+import { notifySimonOfApplication } from "../_lib/simon-notifications.js";
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 50 * 1024 * 1024;
@@ -216,6 +217,8 @@ export async function onRequestPost(context) {
   ).run().catch((error) => {
     console.error("Application integration status update failed", { id, error });
   });
+
+  context.waitUntil(notifySimonOfApplication(application, context.env));
 
   return json({
     id,
