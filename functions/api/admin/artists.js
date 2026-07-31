@@ -2,14 +2,16 @@ import { json, requireAdmin } from "../../_lib/admin-auth.js";
 
 const approvedStatuses = ["approved", "payment_pending", "confirmed"];
 
-const ensureManualArtists = (db) => db.prepare(`
-  CREATE TABLE IF NOT EXISTS manual_artists (
+const ensureManualArtists = async (db) => {
+  await db.prepare(`CREATE TABLE IF NOT EXISTS manual_artists (
     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     first_name TEXT, last_name TEXT, artist_name TEXT,
     email TEXT NOT NULL COLLATE NOCASE UNIQUE, phone TEXT,
     social_links TEXT, notes TEXT
-  )
-`).run();
+  )`).run();
+  try { await db.prepare("ALTER TABLE manual_artists ADD COLUMN linked_email TEXT").run(); }
+  catch (error) { if (!String(error.message || error).toLowerCase().includes("duplicate column")) throw error; }
+};
 
 export async function onRequestGet(context) {
   const unauthorized = await requireAdmin(context);
@@ -67,7 +69,7 @@ export async function onRequestGet(context) {
     SELECT * FROM manual_artists ORDER BY updated_at DESC
   `).all();
   for (const manual of manualResult.results || []) {
-    const key = String(manual.email).trim().toLowerCase();
+    const key = String(manual.linked_email || manual.email).trim().toLowerCase();
     const existing = grouped.get(key);
     if (existing) {
       Object.assign(existing, {
@@ -75,7 +77,7 @@ export async function onRequestGet(context) {
         first_name: manual.first_name || existing.first_name,
         last_name: manual.last_name || existing.last_name,
         artist_name: manual.artist_name || existing.artist_name,
-        email: manual.email, phone: manual.phone || existing.phone,
+        email: manual.email, linked_email: manual.linked_email, phone: manual.phone || existing.phone,
         social_links: manual.social_links || existing.social_links,
         notes: manual.notes,
       });

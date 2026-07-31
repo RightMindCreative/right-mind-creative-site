@@ -24,11 +24,15 @@ const artistSearch = document.querySelector("[data-artist-search]");
 const artistDialog = document.querySelector("[data-artist-dialog]");
 const artistForm = document.querySelector("[data-artist-form]");
 const artistFormError = document.querySelector("[data-artist-error]");
+const artistDialogKicker = document.querySelector("[data-artist-dialog-kicker]");
+const artistDialogTitle = document.querySelector("[data-artist-dialog-title]");
 
 let applications = [];
 let artists = [];
 let selectedId = "";
 let selectedArtistId = "";
+let editingArtistId = "";
+let currentArtist = null;
 let activeView = "dashboard";
 let pendingDecision = "";
 const mobileReview = window.matchMedia("(max-width: 900px)");
@@ -165,10 +169,11 @@ const renderArtistList = (query = "") => {
 };
 
 const renderArtistDetail = ({ artist, applications: artistApplications }) => {
+  currentArtist = artist;
   const name = artistName(artist);
   artistDetail.innerHTML = `
     <button class="detail-back" type="button" data-artist-back>← back to artists</button>
-    <div class="artist-profile-hero"><span class="artist-profile-monogram">${escapeHtml(name.slice(0, 1).toUpperCase())}</span><div><p class="detail-kicker">Approved artist · since ${escapeHtml(formatDate(artist.first_application))}</p><h2>${escapeHtml(name)}</h2><p>${artist.application_count} approved project${artist.application_count === 1 ? "" : "s"} · ${artist.confirmed_count} confirmed</p></div></div>
+    <div class="artist-profile-hero"><span class="artist-profile-monogram">${escapeHtml(name.slice(0, 1).toUpperCase())}</span><div><p class="detail-kicker">Approved artist · since ${escapeHtml(formatDate(artist.first_application))}</p><h2>${escapeHtml(name)}</h2><p>${artist.application_count} approved project${artist.application_count === 1 ? "" : "s"} · ${artist.confirmed_count} confirmed</p></div><button class="edit-artist-button" type="button" data-edit-artist>edit profile <b>↗︎</b></button></div>
     <div class="detail-grid artist-contact-grid">
       ${detailField("First name", artist.first_name)}${detailField("Last name", artist.last_name)}${detailField("Artist name", artist.artist_name)}
       ${detailField("Email", artist.email, false, `mailto:${artist.email}`)}${detailField("Phone", artist.phone, false, `tel:${artist.phone}`)}
@@ -442,8 +447,12 @@ artistList.addEventListener("click", (event) => { const card = event.target.clos
 artistSearch.addEventListener("input", () => renderArtistList(artistSearch.value));
 
 document.querySelector("[data-add-artist]").addEventListener("click", () => {
+  editingArtistId = "";
   artistForm.reset();
   artistFormError.textContent = "";
+  artistDialogKicker.textContent = "New directory profile";
+  artistDialogTitle.innerHTML = "add an<br><em>artist.</em>";
+  artistForm.querySelector("[data-artist-submit]").innerHTML = "save artist <b>↗︎</b>";
   artistDialog.showModal();
 });
 
@@ -459,8 +468,9 @@ artistForm.addEventListener("submit", async (event) => {
   submit.innerHTML = "saving…";
   try {
     const fields = Object.fromEntries(new FormData(artistForm));
-    const payload = await request("/api/admin/artists", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(fields),
+    const endpoint = editingArtistId ? `/api/admin/artists/${encodeURIComponent(editingArtistId)}` : "/api/admin/artists";
+    const payload = await request(endpoint, {
+      method: editingArtistId ? "PATCH" : "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(fields),
     });
     const refreshed = await request("/api/admin/artists");
     artists = refreshed.artists || [];
@@ -472,7 +482,7 @@ artistForm.addEventListener("submit", async (event) => {
     artistFormError.textContent = error.message;
   } finally {
     submit.disabled = false;
-    submit.innerHTML = "save artist <b>↗︎</b>";
+    submit.innerHTML = editingArtistId ? "save changes <b>↗︎</b>" : "save artist <b>↗︎</b>";
   }
 });
 
@@ -485,6 +495,18 @@ appView.addEventListener("click", (event) => {
 
 artistDetail.addEventListener("click", (event) => {
   if (event.target.closest("[data-artist-back]")) { appView.classList.remove("is-artist-detail"); history.pushState({}, "", "#artists"); }
+  if (event.target.closest("[data-edit-artist]") && currentArtist) {
+    editingArtistId = currentArtist.id;
+    artistForm.reset();
+    ["first_name", "last_name", "artist_name", "email", "phone", "social_links", "notes"].forEach((field) => {
+      artistForm.elements[field].value = currentArtist[field] || "";
+    });
+    artistFormError.textContent = "";
+    artistDialogKicker.textContent = "Update directory profile";
+    artistDialogTitle.innerHTML = "edit the<br><em>artist.</em>";
+    artistForm.querySelector("[data-artist-submit]").innerHTML = "save changes <b>↗︎</b>";
+    artistDialog.showModal();
+  }
 });
 
 detail.addEventListener("click", (event) => {
