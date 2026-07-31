@@ -49,6 +49,7 @@
 
 /* Keep admin navigation and directory layout authoritative after legacy review rules. */
 @media(max-width:900px){
+  .review-header{backdrop-filter:none;background:rgba(8,8,8,.96)}
   .admin-nav{position:fixed;z-index:30;left:50%;bottom:max(12px,env(safe-area-inset-bottom));transform:translateX(-50%);width:calc(100% - 28px);max-width:520px;display:flex;background:rgba(12,12,12,.9);box-shadow:0 15px 50px #000;backdrop-filter:blur(24px)}
   .admin-nav button{display:flex;flex:1;padding:12px 6px}
   .artists-shell{display:grid;grid-template-columns:1fr;padding-bottom:90px}
