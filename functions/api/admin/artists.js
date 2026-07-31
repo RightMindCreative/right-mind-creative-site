@@ -2,9 +2,19 @@ import { json, requireAdmin } from "../../_lib/admin-auth.js";
 
 const approvedStatuses = ["approved", "payment_pending", "confirmed"];
 
+const ensureManualArtists = (db) => db.prepare(`
+  CREATE TABLE IF NOT EXISTS manual_artists (
+    id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    first_name TEXT, last_name TEXT, artist_name TEXT,
+    email TEXT NOT NULL COLLATE NOCASE UNIQUE, phone TEXT,
+    social_links TEXT, notes TEXT
+  )
+`).run();
+
 export async function onRequestGet(context) {
   const unauthorized = await requireAdmin(context);
   if (unauthorized) return unauthorized;
+  await ensureManualArtists(context.env.APPLICATIONS_DB);
 
   const result = await context.env.APPLICATIONS_DB.prepare(`
     SELECT
@@ -53,8 +63,71 @@ export async function onRequestGet(context) {
     if (!existing.social_links && application.social_links) existing.social_links = application.social_links;
   }
 
+  const manualResult = await context.env.APPLICATIONS_DB.prepare(`
+    SELECT * FROM manual_artists ORDER BY updated_at DESC
+  `).all();
+  for (const manual of manualResult.results || []) {
+    const key = String(manual.email).trim().toLowerCase();
+    const existing = grouped.get(key);
+    if (existing) {
+      Object.assign(existing, {
+        id: manual.id, source: "manual",
+        first_name: manual.first_name || existing.first_name,
+        last_name: manual.last_name || existing.last_name,
+        artist_name: manual.artist_name || existing.artist_name,
+        email: manual.email, phone: manual.phone || existing.phone,
+        social_links: manual.social_links || existing.social_links,
+        notes: manual.notes,
+      });
+    } else {
+      grouped.set(key, {
+        ...manual, source: "manual", latest_service: "Manually added",
+        latest_status: "artist", latest_activity: manual.updated_at,
+        first_application: manual.created_at, application_count: 0,
+        confirmed_count: 0, file_count: 0,
+      });
+    }
+  }
+
   return json({
     artists: [...grouped.values()],
     approved_statuses: approvedStatuses,
   });
+}
+
+export async function onRequestPost(context) {
+  const unauthorized = await requireAdmin(context);
+  if (unauthorized) return unauthorized;
+  await ensureManualArtists(context.env.APPLICATIONS_DB);
+  let payload;
+  try { payload = await context.request.json(); }
+  catch { return json({ error: "The artist details could not be read." }, 400); }
+
+  const clean = (value, max = 1000) => String(value || "").trim().slice(0, max);
+  const artist = {
+    id: crypto.randomUUID(), first_name: clean(payload.first_name, 100),
+    last_name: clean(payload.last_name, 100), artist_name: clean(payload.artist_name, 160),
+    email: clean(payload.email, 254).toLowerCase(), phone: clean(payload.phone, 60),
+    social_links: clean(payload.social_links, 2000), notes: clean(payload.notes, 5000),
+  };
+  if (!artist.artist_name && !artist.first_name && !artist.last_name) return json({ error: "Add an artist name or customer name." }, 422);
+  if (!/^\S+@\S+\.\S+$/.test(artist.email)) return json({ error: "Add a valid email address." }, 422);
+  const now = new Date().toISOString();
+  try {
+    await context.env.APPLICATIONS_DB.prepare(`
+      INSERT INTO manual_artists
+        (id, created_at, updated_at, first_name, last_name, artist_name, email, phone, social_links, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(artist.id, now, now, artist.first_name, artist.last_name, artist.artist_name, artist.email, artist.phone, artist.social_links, artist.notes).run();
+  } catch (error) {
+    if (String(error.message || error).toLowerCase().includes("unique")) return json({ error: "An artist with that email already exists." }, 409);
+    throw error;
+  }
+  return json({ artist: { ...artist, created_at: now, updated_at: now, source: "manual", application_count: 0, confirmed_count: 0 } }, 201);
+}
+
+export function onRequest(context) {
+  if (context.request.method === "GET") return onRequestGet(context);
+  if (context.request.method === "POST") return onRequestPost(context);
+  return json({ error: "Method not allowed." }, 405);
 }

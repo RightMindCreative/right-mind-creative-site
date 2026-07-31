@@ -21,6 +21,9 @@ const recentActivity = document.querySelector("[data-recent]");
 const artistList = document.querySelector("[data-artist-list]");
 const artistDetail = document.querySelector("[data-artist-detail]");
 const artistSearch = document.querySelector("[data-artist-search]");
+const artistDialog = document.querySelector("[data-artist-dialog]");
+const artistForm = document.querySelector("[data-artist-form]");
+const artistFormError = document.querySelector("[data-artist-error]");
 
 let applications = [];
 let artists = [];
@@ -437,6 +440,41 @@ previousList.addEventListener("click", (event) => {
 });
 artistList.addEventListener("click", (event) => { const card = event.target.closest("[data-artist-id]"); if (card) selectArtist(card.dataset.artistId); });
 artistSearch.addEventListener("input", () => renderArtistList(artistSearch.value));
+
+document.querySelector("[data-add-artist]").addEventListener("click", () => {
+  artistForm.reset();
+  artistFormError.textContent = "";
+  artistDialog.showModal();
+});
+
+artistDialog.addEventListener("click", (event) => {
+  if (event.target === artistDialog || event.target.closest("[data-close-artist]")) artistDialog.close();
+});
+
+artistForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  artistFormError.textContent = "";
+  const submit = artistForm.querySelector("[type=submit]");
+  submit.disabled = true;
+  submit.innerHTML = "saving…";
+  try {
+    const fields = Object.fromEntries(new FormData(artistForm));
+    const payload = await request("/api/admin/artists", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(fields),
+    });
+    const refreshed = await request("/api/admin/artists");
+    artists = refreshed.artists || [];
+    renderArtistList();
+    renderDashboard();
+    artistDialog.close();
+    await selectArtist(payload.artist.id);
+  } catch (error) {
+    artistFormError.textContent = error.message;
+  } finally {
+    submit.disabled = false;
+    submit.innerHTML = "save artist <b>↗︎</b>";
+  }
+});
 
 appView.addEventListener("click", (event) => {
   const route = event.target.closest("[data-route]");

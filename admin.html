@@ -17,8 +17,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=9" />
-    <link rel="stylesheet" href="/admin.css?v=14" />
-    <script src="/admin-script.js?v=10" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=15" />
+    <script src="/admin-script.js?v=11" defer></script>
   </head>
   <body class="review-page is-login">
     <div class="review-login" data-login>
@@ -88,6 +88,7 @@
       <main class="artists-shell admin-view" data-view="artists" hidden>
         <aside class="artists-rail">
           <div class="rail-heading"><p>01 / Approved customers</p><h1>artist<br /><em>directory.</em></h1></div>
+          <button class="add-artist-button" type="button" data-add-artist>add artist <b>＋</b></button>
           <label class="artist-search"><span>Search artists</span><input type="search" placeholder="Name, email, or phone" data-artist-search /></label>
           <div class="artist-list" data-artist-list></div>
         </aside>
@@ -111,6 +112,25 @@
           <button type="button" data-cancel-decision>go back</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog class="artist-dialog" data-artist-dialog>
+      <form class="artist-dialog-card" data-artist-form>
+        <button class="artist-dialog-close" type="button" data-close-artist aria-label="Close">×</button>
+        <p class="detail-kicker">New directory profile</p>
+        <h2>add an<br /><em>artist.</em></h2>
+        <div class="artist-form-grid">
+          <label><span>First name</span><input name="first_name" autocomplete="given-name" /></label>
+          <label><span>Last name</span><input name="last_name" autocomplete="family-name" /></label>
+          <label class="is-wide"><span>Artist name</span><input name="artist_name" /></label>
+          <label class="is-wide"><span>Email *</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label class="is-wide"><span>Phone</span><input name="phone" type="tel" autocomplete="tel" /></label>
+          <label class="is-wide"><span>Social links</span><textarea name="social_links" placeholder="Instagram, TikTok, YouTube, Spotify, website, etc."></textarea></label>
+          <label class="is-wide"><span>Notes</span><textarea name="notes" placeholder="Private notes about the artist or project history."></textarea></label>
+        </div>
+        <p class="artist-form-error" role="alert" data-artist-error></p>
+        <button class="artist-form-submit" type="submit">save artist <b>↗︎</b></button>
+      </form>
     </dialog>
   </body>
 </html>

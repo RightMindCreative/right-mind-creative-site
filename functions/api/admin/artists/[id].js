@@ -4,7 +4,18 @@ export async function onRequestGet(context) {
   const unauthorized = await requireAdmin(context);
   if (unauthorized) return unauthorized;
 
-  const representative = await context.env.APPLICATIONS_DB.prepare(`
+  await context.env.APPLICATIONS_DB.prepare(`
+    CREATE TABLE IF NOT EXISTS manual_artists (
+      id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      first_name TEXT, last_name TEXT, artist_name TEXT,
+      email TEXT NOT NULL COLLATE NOCASE UNIQUE, phone TEXT,
+      social_links TEXT, notes TEXT
+    )
+  `).run();
+  const manual = await context.env.APPLICATIONS_DB.prepare(
+    "SELECT * FROM manual_artists WHERE id = ?",
+  ).bind(context.params.id).first();
+  const representative = manual || await context.env.APPLICATIONS_DB.prepare(`
     SELECT * FROM applications
     WHERE id = ? AND status IN ('approved', 'payment_pending', 'confirmed')
   `).bind(context.params.id).first();
@@ -26,14 +37,15 @@ export async function onRequestGet(context) {
   return json({
     artist: {
       id: representative.id,
-      first_name: latest.first_name || representative.first_name,
-      last_name: latest.last_name || representative.last_name,
-      artist_name: latest.artist_name || representative.artist_name,
+      source: manual ? "manual" : "application",
+      first_name: manual?.first_name || latest.first_name || representative.first_name,
+      last_name: manual?.last_name || latest.last_name || representative.last_name,
+      artist_name: manual?.artist_name || latest.artist_name || representative.artist_name,
       email: representative.email,
-      phone: latest.phone || representative.phone,
-      social_links: latest.social_links || representative.social_links,
-      notes: latest.notes || representative.notes,
-      first_application: rows.at(-1)?.created_at || representative.created_at,
+      phone: manual?.phone || latest.phone || representative.phone,
+      social_links: manual?.social_links || latest.social_links || representative.social_links,
+      notes: manual?.notes || latest.notes || representative.notes,
+      first_application: rows.at(-1)?.created_at || manual?.created_at || representative.created_at,
       latest_activity: latest.deposit_paid_at || latest.updated_at || latest.created_at,
       application_count: rows.length,
       confirmed_count: rows.filter((row) => row.status === "confirmed").length,
