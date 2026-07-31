@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Share your artist contact information with Right Mind Creative." />
+    <meta name="robots" content="noindex,nofollow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Right Mind Creative" />
+    <meta property="og:title" content="Artist Profile — Right Mind Creative" />
+    <meta property="og:description" content="Add or update your private artist profile with Right Mind Creative." />
+    <meta property="og:url" content="https://www.rightmindcreative.co/artist-info" />
+    <meta property="og:image" content="https://www.rightmindcreative.co/media/social/about-page.png" />
+    <meta name="theme-color" content="#080808" />
+    <title>Artist Profile — Right Mind Creative</title>
+    <link rel="icon" href="/media/mark.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/style.css?v=9" />
+    <link rel="stylesheet" href="/artist-info.css?v=1" />
+    <script src="/artist-info.js?v=1" defer></script>
+  </head>
+  <body class="artist-intake-page">
+    <header class="artist-intake-header"><a class="wordmark" href="/">right mind creative.</a><span>Private artist profile</span></header>
+    <main>
+      <section class="artist-intake-intro">
+        <p>Right Mind Creative / Artist directory</p>
+        <h1>tell us<br /><em>who you are.</em></h1>
+        <div><p>This is not a session application. It simply gives our studio the right contact information and links to keep your artist profile current.</p><span>About two minutes.</span></div>
+      </section>
+      <section class="artist-intake-form-wrap">
+        <form class="artist-intake-form" data-artist-intake>
+          <div class="form-heading"><p>01 / Your information</p><h2>build your<br /><em>profile.</em></h2></div>
+          <div class="intake-grid">
+            <label><span>First name *</span><input name="first_name" autocomplete="given-name" required /></label>
+            <label><span>Last name *</span><input name="last_name" autocomplete="family-name" required /></label>
+            <label class="wide"><span>Artist name</span><input name="artist_name" autocomplete="organization" /></label>
+            <label><span>Email *</span><input name="email" type="email" autocomplete="email" required /></label>
+            <label><span>Phone *</span><input name="phone" type="tel" autocomplete="tel" required /></label>
+            <label class="wide"><span>Social links</span><textarea name="social_links" placeholder="Instagram, TikTok, YouTube, Spotify, website, etc."></textarea></label>
+            <label class="wide"><span>Anything we should know?</span><textarea name="notes" placeholder="Pronunciation, preferred contact method, creative role, or anything else helpful."></textarea></label>
+            <label class="intake-trap" aria-hidden="true"><span>Company website</span><input name="company_website" tabindex="-1" autocomplete="off" /></label>
+          </div>
+          <label class="intake-consent"><input type="checkbox" required /><span>I confirm this information is mine and may be stored privately by Right Mind Creative for studio communication.</span></label>
+          <p class="intake-error" data-intake-error role="alert"></p>
+          <button class="intake-submit" type="submit">save my profile <b>↗︎</b></button>
+        </form>
+        <div class="artist-intake-success" data-intake-success hidden>
+          <p>Profile received</p><h2>you’re in<br /><em>the directory.</em></h2><span>Your information is now available privately to the Right Mind Creative team. You can use this same link and email address anytime to update it.</span>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
