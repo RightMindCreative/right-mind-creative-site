@@ -7,9 +7,9 @@
     <meta name="theme-color" content="#080808" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="RMC Review" />
-    <meta name="application-name" content="RMC Review" />
-    <title>Application Review — Right Mind Creative</title>
+    <meta name="apple-mobile-web-app-title" content="RMC Admin" />
+    <meta name="application-name" content="RMC Admin" />
+    <title>Studio Admin — Right Mind Creative</title>
     <link rel="icon" type="image/png" sizes="192x192" href="/media/icons/application-review-192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/media/icons/application-review-180.png" />
     <link rel="manifest" href="/admin.webmanifest" />
@@ -17,8 +17,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=9" />
-    <link rel="stylesheet" href="/admin.css?v=12" />
-    <script src="/admin-script.js?v=9" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=13" />
+    <script src="/admin-script.js?v=10" defer></script>
   </head>
   <body class="review-page is-login">
     <div class="review-login" data-login>
@@ -26,7 +26,7 @@
         <p class="review-kicker">Private studio desk</p>
         <a class="wordmark" href="/index.html">right mind creative.</a>
         <h1>review the<br /><em>work.</em></h1>
-        <p>Applications, private files, and project context—kept in one place.</p>
+        <p>Applications, artists, private files, and studio activity—kept in one place.</p>
         <input class="password-username" name="username" type="text" value="right-mind-review" autocomplete="username" tabindex="-1" aria-hidden="true" />
         <label><span>4-digit review passcode</span><input name="password" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" autocapitalize="none" spellcheck="false" aria-label="4-digit review passcode" required /></label>
         <p class="login-error" role="alert"></p>
@@ -37,11 +37,33 @@
     <div class="review-app" data-app hidden>
       <header class="review-header">
         <a class="wordmark" href="/index.html">right mind creative.</a>
-        <div><span>Application desk</span><strong data-count>0 requests</strong></div>
+        <nav class="admin-nav" aria-label="Admin sections">
+          <button type="button" data-route="dashboard">Dashboard</button>
+          <button type="button" data-route="applications">Applications <i data-count>0</i></button>
+          <button type="button" data-route="artists">Artists</button>
+        </nav>
         <button type="button" data-logout>sign out</button>
       </header>
 
-      <main class="review-shell">
+      <main class="admin-dashboard" data-view="dashboard">
+        <section class="dashboard-hero">
+          <p class="detail-kicker">Private studio desk</p>
+          <h1>studio<br /><em>overview.</em></h1>
+          <p>Applications, approved artists, and sessions—organized in one place.</p>
+        </section>
+        <section class="dashboard-stats" data-dashboard-stats></section>
+        <section class="dashboard-workspaces">
+          <button type="button" class="workspace-card" data-route="applications">
+            <span>01 / Review</span><h2>applications.</h2><p>Review new requests, files, links, deposits, and previous decisions.</p><b>open workspace ↗︎</b>
+          </button>
+          <button type="button" class="workspace-card is-artists" data-route="artists">
+            <span>02 / Directory</span><h2>artists.</h2><p>Contact information and project history for every approved customer.</p><b>open directory ↗︎</b>
+          </button>
+        </section>
+        <section class="dashboard-recent"><div class="dashboard-section-heading"><p>03 / Recent activity</p><h2>latest<br /><em>movement.</em></h2></div><div data-recent></div></section>
+      </main>
+
+      <main class="review-shell admin-view" data-view="applications" hidden>
         <aside class="application-rail">
           <div class="rail-heading"><p>01 / Inbox</p><h1>pending<br /><em>applications.</em></h1></div>
           <div class="application-list" data-list></div>
@@ -60,6 +82,17 @@
             <p>Studio application desk</p>
             <h2>choose a request<br /><em>to review.</em></h2>
           </div>
+        </section>
+      </main>
+
+      <main class="artists-shell admin-view" data-view="artists" hidden>
+        <aside class="artists-rail">
+          <div class="rail-heading"><p>01 / Approved customers</p><h1>artist<br /><em>directory.</em></h1></div>
+          <label class="artist-search"><span>Search artists</span><input type="search" placeholder="Name, email, or phone" data-artist-search /></label>
+          <div class="artist-list" data-artist-list></div>
+        </aside>
+        <section class="artist-detail" data-artist-detail>
+          <div class="empty-state"><p>Artist directory</p><h2>choose an artist<br /><em>to view.</em></h2></div>
         </section>
       </main>
     </div>

@@ -1,7 +1,7 @@
 {
-  "name": "Right Mind Creative — Application Review",
-  "short_name": "RMC Review",
-  "description": "Private application review desk for Right Mind Creative.",
+  "name": "Right Mind Creative — Studio Admin",
+  "short_name": "RMC Admin",
+  "description": "Private studio dashboard for Right Mind Creative.",
   "id": "/admin",
   "start_url": "/admin",
   "scope": "/",

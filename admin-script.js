@@ -14,9 +14,19 @@ const decisionConfirm = decisionDialog.querySelector("[data-confirm-decision]");
 const customDepositField = decisionDialog.querySelector("[data-custom-deposit]");
 const customDepositInput = decisionDialog.querySelector("[data-custom-deposit-input]");
 const passcodeInput = loginForm.elements.password;
+const views = [...document.querySelectorAll("[data-view]")];
+const routeButtons = [...document.querySelectorAll("[data-route]")];
+const dashboardStats = document.querySelector("[data-dashboard-stats]");
+const recentActivity = document.querySelector("[data-recent]");
+const artistList = document.querySelector("[data-artist-list]");
+const artistDetail = document.querySelector("[data-artist-detail]");
+const artistSearch = document.querySelector("[data-artist-search]");
 
 let applications = [];
+let artists = [];
 let selectedId = "";
+let selectedArtistId = "";
+let activeView = "dashboard";
 let pendingDecision = "";
 const mobileReview = window.matchMedia("(max-width: 900px)");
 
@@ -73,6 +83,15 @@ const showApp = () => {
   document.body.classList.remove("is-login");
 };
 
+const setView = (view, updateHistory = true) => {
+  activeView = ["dashboard", "applications", "artists"].includes(view) ? view : "dashboard";
+  views.forEach((section) => { section.hidden = section.dataset.view !== activeView; });
+  routeButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.route === activeView));
+  appView.classList.remove("is-detail", "is-artist-detail");
+  if (updateHistory) history.pushState({ view: activeView }, "", activeView === "dashboard" ? "#dashboard" : `#${activeView}`);
+  window.scrollTo(0, 0);
+};
+
 passcodeInput.addEventListener("input", () => {
   passcodeInput.value = passcodeInput.value.replace(/\D/g, "").slice(0, 4);
 });
@@ -106,6 +125,67 @@ const renderList = () => {
 
   list.innerHTML = cards(pending) || `<p class="review-message">No applications are waiting for review.</p>`;
   previousList.innerHTML = cards(previous, true) || `<p class="review-message">No applications have been completed in the past 30 days.</p>`;
+};
+
+const artistName = (artist) => artist.artist_name || `${artist.first_name || ""} ${artist.last_name || ""}`.trim() || artist.email;
+
+const renderDashboard = () => {
+  const completedStatuses = ["approved", "declined", "payment_pending", "confirmed"];
+  const pending = applications.filter((item) => !completedStatuses.includes(item.status));
+  const awaitingDeposits = applications.filter((item) => item.status === "approved" || item.status === "payment_pending");
+  const confirmed = applications.filter((item) => item.status === "confirmed");
+  dashboardStats.innerHTML = [
+    ["Pending applications", pending.length, "applications"],
+    ["Approved artists", artists.length, "artists"],
+    ["Awaiting deposits", awaitingDeposits.length, "applications"],
+    ["Confirmed sessions", confirmed.length, "applications"],
+  ].map(([label, value, route], index) => `<button type="button" class="stat-card" data-route="${route}"><span>0${index + 1}</span><strong>${value}</strong><p>${label}</p></button>`).join("");
+
+  const recent = [...applications].sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at)).slice(0, 5);
+  recentActivity.innerHTML = recent.length ? `<div class="recent-list">${recent.map((application) => `
+    <button type="button" data-application-link="${escapeHtml(application.id)}">
+      <span>${escapeHtml(formatDate(application.updated_at || application.created_at))}</span>
+      <strong>${escapeHtml(application.artist_name || `${application.first_name} ${application.last_name}`)}</strong>
+      <p>${escapeHtml(application.service)} · ${escapeHtml(application.status)}</p><b>↗︎</b>
+    </button>`).join("")}</div>` : `<p class="review-message">Activity will appear here as applications arrive.</p>`;
+};
+
+const renderArtistList = (query = "") => {
+  const term = query.trim().toLowerCase();
+  const filtered = artists.filter((artist) => !term || [artistName(artist), artist.email, artist.phone].some((value) => String(value || "").toLowerCase().includes(term)));
+  artistList.innerHTML = filtered.length ? filtered.map((artist) => `
+    <button type="button" class="artist-card ${artist.id === selectedArtistId ? "is-active" : ""}" data-artist-id="${escapeHtml(artist.id)}">
+      <span class="artist-monogram">${escapeHtml(artistName(artist).slice(0, 1).toUpperCase())}</span>
+      <span><strong>${escapeHtml(artistName(artist))}</strong><small>${escapeHtml(artist.email)}</small></span>
+      <b>${artist.application_count} project${artist.application_count === 1 ? "" : "s"}</b>
+    </button>`).join("") : `<p class="review-message">No approved artists match this search.</p>`;
+};
+
+const renderArtistDetail = ({ artist, applications: artistApplications }) => {
+  const name = artistName(artist);
+  artistDetail.innerHTML = `
+    <button class="detail-back" type="button" data-artist-back>← back to artists</button>
+    <div class="artist-profile-hero"><span class="artist-profile-monogram">${escapeHtml(name.slice(0, 1).toUpperCase())}</span><div><p class="detail-kicker">Approved artist · since ${escapeHtml(formatDate(artist.first_application))}</p><h2>${escapeHtml(name)}</h2><p>${artist.application_count} approved project${artist.application_count === 1 ? "" : "s"} · ${artist.confirmed_count} confirmed</p></div></div>
+    <div class="detail-grid artist-contact-grid">
+      ${detailField("First name", artist.first_name)}${detailField("Last name", artist.last_name)}${detailField("Artist name", artist.artist_name)}
+      ${detailField("Email", artist.email, false, `mailto:${artist.email}`)}${detailField("Phone", artist.phone, false, `tel:${artist.phone}`)}
+      ${detailField("Latest activity", formatDate(artist.latest_activity))}${detailField("Social links", artist.social_links, true)}${detailField("Latest notes", artist.notes, true)}
+    </div>
+    <section class="review-section"><div class="review-section-head"><div><p>02 / Approved work</p><h3>project history.</h3></div></div>
+      <div class="artist-projects">${artistApplications.map((application) => `<button type="button" data-application-link="${escapeHtml(application.id)}"><span>${escapeHtml(formatDate(application.created_at))}</span><strong>${escapeHtml(application.service)}</strong><p>${escapeHtml(application.status)} · ${Number(application.file_count) || 0} files</p><b>view application ↗︎</b></button>`).join("")}</div>
+    </section>`;
+};
+
+const selectArtist = async (id, navigate = true) => {
+  selectedArtistId = id;
+  renderArtistList(artistSearch.value);
+  if (mobileReview.matches) appView.classList.add("is-artist-detail");
+  if (navigate) history.pushState({ artistId: id }, "", `#artist=${encodeURIComponent(id)}`);
+  artistDetail.classList.add("review-loading");
+  try { renderArtistDetail(await request(`/api/admin/artists/${encodeURIComponent(id)}`)); }
+  catch (error) { artistDetail.innerHTML = `<p class="review-message">${escapeHtml(error.message)}</p>`; }
+  finally { artistDetail.classList.remove("review-loading"); }
+  window.scrollTo(0, 0);
 };
 
 const detailField = (label, value, wide = false, link = "") => {
@@ -303,16 +383,27 @@ const selectApplication = async (id, navigate = true) => {
 };
 
 const loadApplications = async () => {
-  const payload = await request("/api/admin/applications");
-  applications = payload.applications || [];
-  const requestedId = new URLSearchParams(location.hash.replace(/^#/, "")).get("application");
-  selectedId = mobileReview.matches ? "" : applications[0]?.id || "";
+  const [applicationPayload, artistPayload] = await Promise.all([request("/api/admin/applications"), request("/api/admin/artists")]);
+  applications = applicationPayload.applications || [];
+  artists = artistPayload.artists || [];
   renderList();
-  if (mobileReview.matches && requestedId && applications.some((application) => application.id === requestedId)) {
-    await selectApplication(requestedId, false);
-  } else if (selectedId) {
-    await selectApplication(selectedId, false);
+  renderArtistList();
+  renderDashboard();
+  await routeFromHash();
+};
+
+const routeFromHash = async () => {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const applicationId = params.get("application");
+  const artistId = params.get("artist");
+  if (applicationId && applications.some((application) => application.id === applicationId)) {
+    setView("applications", false); await selectApplication(applicationId, false); return;
   }
+  if (artistId && artists.some((artist) => artist.id === artistId)) {
+    setView("artists", false); await selectArtist(artistId, false); return;
+  }
+  const hashView = location.hash.slice(1);
+  setView(["applications", "artists"].includes(hashView) ? hashView : "dashboard", false);
 };
 
 loginForm.addEventListener("submit", async (event) => {
@@ -343,6 +434,19 @@ list.addEventListener("click", (event) => {
 previousList.addEventListener("click", (event) => {
   const card = event.target.closest("[data-id]");
   if (card) selectApplication(card.dataset.id);
+});
+artistList.addEventListener("click", (event) => { const card = event.target.closest("[data-artist-id]"); if (card) selectArtist(card.dataset.artistId); });
+artistSearch.addEventListener("input", () => renderArtistList(artistSearch.value));
+
+appView.addEventListener("click", (event) => {
+  const route = event.target.closest("[data-route]");
+  if (route) { setView(route.dataset.route); return; }
+  const applicationLink = event.target.closest("[data-application-link]");
+  if (applicationLink) { setView("applications", false); selectApplication(applicationLink.dataset.applicationLink); }
+});
+
+artistDetail.addEventListener("click", (event) => {
+  if (event.target.closest("[data-artist-back]")) { appView.classList.remove("is-artist-detail"); history.pushState({}, "", "#artists"); }
 });
 
 detail.addEventListener("click", (event) => {
@@ -419,12 +523,7 @@ decisionConfirm.addEventListener("click", async () => {
   });
 });
 
-window.addEventListener("popstate", () => {
-  if (!mobileReview.matches) return;
-  const id = new URLSearchParams(location.hash.replace(/^#/, "")).get("application");
-  if (id && applications.some((application) => application.id === id)) selectApplication(id, false);
-  else showInbox();
-});
+window.addEventListener("popstate", () => routeFromHash());
 
 logout.addEventListener("click", async () => {
   await fetch("/api/admin/session", { method: "DELETE" });
