@@ -62,6 +62,6 @@ Verify missing and incorrect bearer tokens return an authentication error.
 Then test artist lookup, service resolution, exact-slot availability, and one
 idempotent booking request. Repeating the request with the same idempotency key
 must return the same application ID without adding another D1 row or calendar
-event. A newly created request has status `new`; it is not a confirmed booking
+event. An owner-confirmed Simon request has status `approved`; it is not a confirmed booking
 until the existing approval, Stripe, and verified webhook lifecycle reaches
 `confirmed`/`paid`.
