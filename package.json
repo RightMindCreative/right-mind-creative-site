@@ -1,0 +1,8 @@
+{
+  "name": "right-mind-creative-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

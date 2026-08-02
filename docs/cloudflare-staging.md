@@ -45,3 +45,23 @@ Configure these Pages preview variables:
   secret
 
 Do not reuse these credentials or this calendar in production.
+
+## Simon service API preview
+
+Apply all D1 migrations, including `0008_simon_service_api.sql`, to the staging
+database before testing the Simon routes. Configure these as encrypted Pages
+preview secrets rather than plaintext variables:
+
+- `SIMON_SERVICE_TOKEN`: a dedicated high-entropy bearer token used only by Simon
+- `SIMON_APPLICATION_WEBHOOK_SECRET`: the shared application-event signing secret
+
+Configure `SIMON_APPLICATION_WEBHOOK_URL` to the staging Simon receiver. Do not
+reuse the browser admin passcode or cookie as the service credential.
+
+Verify missing and incorrect bearer tokens return an authentication error.
+Then test artist lookup, service resolution, exact-slot availability, and one
+idempotent booking request. Repeating the request with the same idempotency key
+must return the same application ID without adding another D1 row or calendar
+event. A newly created request has status `new`; it is not a confirmed booking
+until the existing approval, Stripe, and verified webhook lifecycle reaches
+`confirmed`/`paid`.

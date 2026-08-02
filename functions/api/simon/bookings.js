@@ -1,0 +1,163 @@
+import { json } from "../../_lib/admin-auth.js";
+import { addApplicationToCalendar } from "../../_lib/application-notifications.js";
+import { requireSimonService } from "../../_lib/simon-service-auth.js";
+import { serviceById } from "../../_lib/service-catalog.js";
+import { onRequestGet as scopedAvailability } from "./availability.js";
+
+const clean = (value, length) => String(value || "").trim().slice(0, length);
+
+const hashRequest = async (payload) => {
+  const digest = await crypto.subtle.digest(
+    "SHA-256", new TextEncoder().encode(JSON.stringify(payload)),
+  );
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const centralParts = (date) => new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hour12: true,
+}).formatToParts(date).reduce((parts, part) => ({ ...parts, [part.type]: part.value }), {});
+
+const responseFor = (application, client, service, startsAt, endsAt) => ({
+  confirmed: true,
+  booking: {
+    id: application.id,
+    client,
+    service: { id: service.id, name: service.name },
+    startsAt,
+    endsAt,
+    status: application.status,
+    paymentStatus: application.paymentStatus,
+  },
+});
+
+const existingIdempotentResponse = async (db, key, requestHash) => {
+  const existing = await db.prepare(`
+    SELECT request_hash, response_json FROM simon_idempotency WHERE idempotency_key = ?
+  `).bind(key).first();
+  if (!existing) return null;
+  if (existing.request_hash !== requestHash) {
+    return json({ error: "That idempotency key was already used for a different request." }, 409);
+  }
+  return json(JSON.parse(existing.response_json));
+};
+
+export async function onRequestPost(context) {
+  const unauthorized = requireSimonService(context);
+  if (unauthorized) return unauthorized;
+  const idempotencyKey = clean(context.request.headers.get("idempotency-key"), 200);
+  if (!idempotencyKey) return json({ error: "An Idempotency-Key header is required." }, 400);
+
+  let payload;
+  try { payload = await context.request.json(); }
+  catch { return json({ error: "The booking request could not be read." }, 400); }
+  const requestHash = await hashRequest(payload);
+  const duplicate = await existingIdempotentResponse(
+    context.env.APPLICATIONS_DB, idempotencyKey, requestHash,
+  );
+  if (duplicate) return duplicate;
+
+  const service = serviceById(clean(payload.serviceId, 100));
+  const durationMinutes = Number(payload.durationMinutes);
+  const startsAt = new Date(payload.startsAt || "");
+  const client = {
+    id: clean(payload.client?.id, 200),
+    name: clean(payload.client?.name, 200),
+    phone: clean(payload.client?.phone, 60),
+    email: clean(payload.client?.email, 254).toLowerCase(),
+  };
+  if (!service || !service.durationOptions.includes(durationMinutes)
+      || Number.isNaN(startsAt.getTime()) || !client.name || !client.phone
+      || !/^\S+@\S+\.\S+$/.test(client.email)) {
+    return json({ error: "The booking request is incomplete or invalid." }, 422);
+  }
+
+  const availabilityUrl = new URL("/api/simon/availability", context.request.url);
+  availabilityUrl.searchParams.set("serviceId", service.id);
+  availabilityUrl.searchParams.set("startsAfter", payload.startsAt);
+  availabilityUrl.searchParams.set("endsBefore", new Date(startsAt.getTime() + durationMinutes * 60000).toISOString());
+  availabilityUrl.searchParams.set("durationMinutes", String(durationMinutes));
+  const availabilityResponse = await scopedAvailability({
+    ...context, request: new Request(availabilityUrl, { headers: context.request.headers }),
+  });
+  const availability = await availabilityResponse.json();
+  if (!availabilityResponse.ok) return json(availability, availabilityResponse.status);
+  if (!availability.slots?.length) return json({ error: "The requested slot is unavailable." }, 409);
+
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const statusToken = crypto.randomUUID();
+  const nameParts = client.name.split(/\s+/);
+  const firstName = nameParts.shift() || client.name;
+  const lastName = nameParts.join(" ") || "Artist";
+  const local = centralParts(startsAt);
+  const preferredDate = `${local.year}-${local.month}-${local.day}`;
+  const preferredTime = `${local.hour}:${local.minute} ${local.dayPeriod}`;
+  const endsAt = new Date(startsAt.getTime() + durationMinutes * 60000).toISOString();
+  const application = {
+    id, createdAt: now, category: service.category, service: service.name,
+    serviceOption: `${durationMinutes / 60} hours`, preferredDate, preferredTime,
+    firstName, lastName, artistName: client.name, email: client.email,
+    phone: client.phone, stemCount: "", socialLinks: "",
+    notes: "Created by Simon through the scoped service API.", usesCalendar: true,
+  };
+  const result = responseFor(
+    { id, status: "new", paymentStatus: "not_required" },
+    client, service, payload.startsAt, endsAt,
+  );
+
+  try {
+    await context.env.APPLICATIONS_DB.batch([
+      context.env.APPLICATIONS_DB.prepare(`
+        INSERT INTO applications (
+          id, created_at, updated_at, status, category, service, service_option,
+          preferred_date, preferred_time, first_name, last_name, artist_name,
+          email, phone, notes, email_notification_status, public_status_token
+        ) VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?)
+      `).bind(
+        id, now, now, service.category, service.name, application.serviceOption,
+        preferredDate, preferredTime, firstName, lastName, client.name,
+        client.email, client.phone, application.notes, statusToken,
+      ),
+      context.env.APPLICATIONS_DB.prepare(`
+        INSERT INTO simon_idempotency
+          (idempotency_key, request_hash, application_id, response_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(idempotencyKey, requestHash, id, JSON.stringify(result), now),
+      context.env.APPLICATIONS_DB.prepare(`
+        INSERT INTO simon_api_audit
+          (id, created_at, action, request_id, idempotency_key, application_id, outcome)
+        VALUES (?, ?, 'booking.create', ?, ?, ?, 'created')
+      `).bind(crypto.randomUUID(), now, context.request.headers.get("x-request-id") || "", idempotencyKey, id),
+    ]);
+  } catch (error) {
+    const raced = await existingIdempotentResponse(
+      context.env.APPLICATIONS_DB, idempotencyKey, requestHash,
+    );
+    if (raced) return raced;
+    console.error("Simon booking request failed", { applicationId: id, error });
+    return json({ error: "The booking request could not be created." }, 500);
+  }
+
+  try {
+    const calendar = await addApplicationToCalendar(application, [], context.env);
+    await context.env.APPLICATIONS_DB.prepare(`
+      UPDATE applications SET google_event_id = ?, calendar_sync_status = ?,
+        calendar_sync_error = NULL, updated_at = ? WHERE id = ?
+    `).bind(calendar.eventId || null, calendar.status, new Date().toISOString(), id).run();
+  } catch (error) {
+    await context.env.APPLICATIONS_DB.prepare(`
+      UPDATE applications SET calendar_sync_status = 'failed', calendar_sync_error = ?,
+        updated_at = ? WHERE id = ?
+    `).bind(String(error.message || error).slice(0, 500), new Date().toISOString(), id).run();
+    console.error("Simon booking calendar sync failed", { applicationId: id, error });
+  }
+
+  return json(result, 201);
+}
+
+export function onRequest(context) {
+  if (context.request.method === "POST") return onRequestPost(context);
+  return json({ error: "Method not allowed." }, 405);
+}
