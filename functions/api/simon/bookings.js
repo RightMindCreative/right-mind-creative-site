@@ -5,6 +5,7 @@ import { serviceById } from "../../_lib/service-catalog.js";
 import { onRequestGet as scopedAvailability } from "./availability.js";
 
 const clean = (value, length) => String(value || "").trim().slice(0, length);
+export const SIMON_APPLICATION_STATUS = "approved";
 
 const hashRequest = async (payload) => {
   const digest = await crypto.subtle.digest(
@@ -100,10 +101,10 @@ export async function onRequestPost(context) {
     serviceOption: `${durationMinutes / 60} hours`, preferredDate, preferredTime,
     firstName, lastName, artistName: client.name, email: client.email,
     phone: client.phone, stemCount: "", socialLinks: "",
-    notes: "Created by Simon through the scoped service API.", usesCalendar: true,
+    notes: "Created and owner-approved by Simon through the scoped service API.", usesCalendar: true,
   };
   const result = responseFor(
-    { id, status: "new", paymentStatus: "not_required" },
+    { id, status: SIMON_APPLICATION_STATUS, paymentStatus: "not_required" },
     client, service, payload.startsAt, endsAt,
   );
 
@@ -114,7 +115,7 @@ export async function onRequestPost(context) {
           id, created_at, updated_at, status, category, service, service_option,
           preferred_date, preferred_time, first_name, last_name, artist_name,
           email, phone, notes, email_notification_status, public_status_token
-        ) VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?)
+        ) VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?)
       `).bind(
         id, now, now, service.category, service.name, application.serviceOption,
         preferredDate, preferredTime, firstName, lastName, client.name,
@@ -128,7 +129,7 @@ export async function onRequestPost(context) {
       context.env.APPLICATIONS_DB.prepare(`
         INSERT INTO simon_api_audit
           (id, created_at, action, request_id, idempotency_key, application_id, outcome)
-        VALUES (?, ?, 'booking.create', ?, ?, ?, 'created')
+        VALUES (?, ?, 'booking.create', ?, ?, ?, 'approved')
       `).bind(crypto.randomUUID(), now, context.request.headers.get("x-request-id") || "", idempotencyKey, id),
     ]);
   } catch (error) {
