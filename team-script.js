@@ -60,7 +60,7 @@ const renderSummary = () => {
   requestCount.textContent = pendingRequests;
 };
 
-const eventButton = (session) => `<button type="button" class="calendar-event is-${statusClass(session.status)} ${session.assignment?.state === 'accepted' ? 'is-mine' : ''}" data-session="${escapeHtml(session.id)}"><strong>${escapeHtml(formatTime(session.preferredTime))} · ${escapeHtml(session.artistName)}</strong><small>${escapeHtml(session.service)} · ${escapeHtml(assignmentLabel(session.assignment))}</small></button>`;
+const eventButton = (session) => `<button type="button" class="calendar-event is-${statusClass(session.status)} ${session.assignment?.state === 'accepted' ? 'is-mine' : ''}" data-session="${escapeHtml(session.id)}" aria-label="${escapeHtml(`${formatTime(session.preferredTime)} · ${session.artistName} · ${session.service} · ${assignmentLabel(session.assignment)}`)}"><strong>${escapeHtml(formatTime(session.preferredTime))} · ${escapeHtml(session.artistName)}</strong><small>${escapeHtml(session.service)} · ${escapeHtml(assignmentLabel(session.assignment))}</small></button>`;
 
 const calendarDay = (day, month = day.getMonth()) => {
   const key = dateKey(day);
