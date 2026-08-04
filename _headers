@@ -15,3 +15,7 @@
 /admin*
   Cache-Control: private, no-store
   X-Robots-Tag: noindex, nofollow, noarchive
+
+/team*
+  Cache-Control: private, no-store
+  X-Robots-Tag: noindex, nofollow, noarchive

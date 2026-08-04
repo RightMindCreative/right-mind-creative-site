@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <meta name="theme-color" content="#080808" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="RMC Team" />
+    <title>Team Schedule — Right Mind Creative</title>
+    <link rel="icon" type="image/png" sizes="192x192" href="/media/icons/application-review-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/media/icons/application-review-180.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/style.css?v=9" />
+    <link rel="stylesheet" href="/team.css?v=1" />
+    <script src="/team-script.js?v=1" defer></script>
+  </head>
+  <body class="team-page is-login">
+    <section class="team-login" data-login>
+      <form class="team-login-card" autocomplete="on">
+        <p class="team-kicker">Right Mind Creative · Team</p>
+        <a class="wordmark" href="/index.html">right mind creative.</a>
+        <h1>hey,<br /><em>Jake.</em></h1>
+        <p>Your schedule, session requests, and accepted handoffs live here.</p>
+        <input class="hidden-username" name="username" value="jake-kaiser" autocomplete="username" tabindex="-1" aria-hidden="true" />
+        <label><span>4-digit team passcode</span><input name="password" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" required /></label>
+        <p class="team-error" data-login-error role="alert"></p>
+        <button type="submit">open schedule <b>↗︎</b></button>
+      </form>
+    </section>
+
+    <div class="team-app" data-app hidden>
+      <header class="team-header">
+        <a class="wordmark" href="/index.html">right mind creative.</a>
+        <nav aria-label="Team dashboard sections">
+          <button type="button" data-view-button="calendar">Calendar</button>
+          <button type="button" data-view-button="requests">Requests <i data-request-count>0</i></button>
+          <button type="button" data-view-button="mine">My sessions</button>
+        </nav>
+        <button type="button" class="team-logout" data-logout>sign out</button>
+      </header>
+
+      <main class="team-main">
+        <section class="team-intro">
+          <div><p class="team-kicker">Employee scheduling · Jake Kaiser</p><h1>studio<br /><em>calendar.</em></h1></div>
+          <div class="team-summary" data-summary></div>
+        </section>
+
+        <section class="team-view" data-view="calendar">
+          <div class="calendar-toolbar">
+            <div><p class="team-kicker">All active requests</p><h2 data-month-label></h2></div>
+            <div><button type="button" data-month="-1" aria-label="Previous month">←</button><button type="button" data-today>today</button><button type="button" data-month="1" aria-label="Next month">→</button></div>
+          </div>
+          <div class="team-calendar" data-calendar></div>
+          <div class="calendar-legend"><span><i class="is-pending"></i> pending application</span><span><i class="is-approved"></i> approved / deposit pending</span><span><i class="is-confirmed"></i> confirmed</span><span><i class="is-mine"></i> assigned to you</span></div>
+        </section>
+
+        <section class="team-view" data-view="requests" hidden>
+          <div class="list-heading"><p class="team-kicker">Scheduling handoffs</p><h2>requests<br /><em>between us.</em></h2></div>
+          <div class="session-list" data-request-list></div>
+        </section>
+
+        <section class="team-view" data-view="mine" hidden>
+          <div class="list-heading"><p class="team-kicker">Your responsibility</p><h2>my<br /><em>sessions.</em></h2></div>
+          <div class="session-list" data-mine-list></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="session-dialog" data-session-dialog>
+      <article data-session-detail></article>
+    </dialog>
+  </body>
+</html>

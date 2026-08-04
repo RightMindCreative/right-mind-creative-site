@@ -336,7 +336,33 @@ const renderDecision = (application) => {
   `;
 };
 
-const renderDetail = ({ application, files }) => {
+const renderAssignment = (application, assignment) => {
+  const usesCalendar = application.category !== "mixing" && application.service !== "Custom Project";
+  if (!usesCalendar || ["declined", "cancelled"].includes(application.status)) return "";
+  const state = assignment?.state || "unassigned";
+  const labels = {
+    requested_owner: "awaiting Jake’s response",
+    requested_employee: "Jake requested this session",
+    accepted: "Jake is running this session",
+    declined: "Jake declined this session",
+    cancelled: "assignment cancelled",
+    unassigned: "no engineer assigned",
+  };
+  const active = ["requested_owner", "requested_employee", "accepted"].includes(state);
+  return `<section class="employee-handoff" data-employee-handoff>
+    <div><p class="detail-kicker">Engineer handoff</p><h3>${escapeHtml(labels[state] || state)}</h3>
+      ${assignment?.request_note ? `<p>${escapeHtml(assignment.request_note)}</p>` : ""}
+      ${assignment?.response_note ? `<small>Jake: ${escapeHtml(assignment.response_note)}</small>` : ""}
+    </div>
+    <div class="employee-handoff-actions">
+      ${!active ? `<button type="button" data-assignment-action="request">request Jake <b>↗︎</b></button>` : ""}
+      ${state === "requested_employee" ? `<button type="button" data-assignment-action="accept">approve Jake <b>✓</b></button><button type="button" class="is-secondary" data-assignment-action="decline">decline request</button>` : ""}
+      ${state === "requested_owner" || state === "accepted" ? `<button type="button" class="is-secondary" data-assignment-action="cancel">cancel handoff</button>` : ""}
+    </div>
+  </section>`;
+};
+
+const renderDetail = ({ application, files, assignment }) => {
   const name = application.artist_name || `${application.first_name} ${application.last_name}`;
   const usesCalendar = application.category !== "mixing" && application.service !== "Custom Project";
   const calendarStatus = application.calendar_sync_status || "not synced";
@@ -365,6 +391,7 @@ const renderDetail = ({ application, files }) => {
       <div><p class="detail-kicker">Calendar sync</p><strong>${escapeHtml(calendarStatus)}</strong>${application.calendar_sync_error ? `<small>${escapeHtml(application.calendar_sync_error)}</small>` : ""}</div>
       <button type="button" data-retry-calendar>repair calendar sync <b>↗︎</b></button>
     </section>` : ""}
+    ${renderAssignment(application, assignment)}
     <section class="review-section"><div class="review-section-head"><div><p>03 / Submitted material</p><h3>listen &amp; look.</h3></div></div>${renderFiles(files)}</section>
     <section class="review-section"><div class="review-section-head"><div><p>04 / Online presence</p><h3>social preview.</h3></div></div>${renderSocial(application.social_links)}</section>
     ${renderDecision(application)}
@@ -533,6 +560,23 @@ detail.addEventListener("click", (event) => {
     }).then(() => selectApplication(selectedId, false)).catch((error) => {
       retryCalendar.textContent = error.message;
       retryCalendar.disabled = false;
+    });
+    return;
+  }
+  const assignmentButton = event.target.closest("[data-assignment-action]");
+  if (assignmentButton && selectedId) {
+    const action = assignmentButton.dataset.assignmentAction;
+    const note = ["request", "accept", "decline"].includes(action) ? window.prompt(action === "request" ? "Optional note for Jake:" : "Optional response note:", "") : null;
+    if (["request", "accept", "decline"].includes(action) && note === null) return;
+    assignmentButton.disabled = true;
+    assignmentButton.textContent = "saving…";
+    request(`/api/admin/applications/${encodeURIComponent(selectedId)}/assignment`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, note }),
+    }).then(() => selectApplication(selectedId, false)).catch((error) => {
+      assignmentButton.textContent = error.message;
+      assignmentButton.disabled = false;
     });
     return;
   }
