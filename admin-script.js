@@ -496,6 +496,7 @@ calendarImportButton.addEventListener("click", async () => {
   calendarImportStatus.textContent = "Checking Google Calendar…";
   try {
     const result = await request("/api/admin/calendar-import", { method: "POST" });
+    calendarImportStatus.dataset.importResult = JSON.stringify(result);
     const refreshed = await request("/api/admin/artists");
     artists = refreshed.artists || [];
     renderArtistList(artistSearch.value);

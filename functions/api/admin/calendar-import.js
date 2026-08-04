@@ -39,7 +39,11 @@ const loadMatches = async (env) => {
     seen.add(event.id);
     matches.push({ event, mapping, range });
   }
-  return matches.sort((a, b) => a.event.start.dateTime.localeCompare(b.event.start.dateTime));
+  return {
+    matches: matches.sort((a, b) => a.event.start.dateTime.localeCompare(b.event.start.dateTime)),
+    scannedCount: events.length,
+    calendarTitles: events.map((event) => event.summary).filter(Boolean).slice(0, 100),
+  };
 };
 
 const findArtist = async (db, artistName) => db.prepare(`
@@ -63,8 +67,12 @@ export async function onRequestGet(context) {
   const unauthorized = await requireAdmin(context);
   if (unauthorized) return unauthorized;
   if (!calendarIsConfigured(context.env)) return json({ error: "Google Calendar is not configured." }, 503);
-  const matches = await loadMatches(context.env);
-  return json({ matches: await Promise.all(matches.map((match) => publicMatch(context.env.APPLICATIONS_DB, match))) });
+  const scan = await loadMatches(context.env);
+  return json({
+    scannedCount: scan.scannedCount,
+    calendarTitles: scan.calendarTitles,
+    matches: await Promise.all(scan.matches.map((match) => publicMatch(context.env.APPLICATIONS_DB, match))),
+  });
 }
 
 export async function onRequestPost(context) {
@@ -72,13 +80,13 @@ export async function onRequestPost(context) {
   if (unauthorized) return unauthorized;
   if (!calendarIsConfigured(context.env)) return json({ error: "Google Calendar is not configured." }, 503);
   const db = context.env.APPLICATIONS_DB;
-  const matches = await loadMatches(context.env);
+  const scan = await loadMatches(context.env);
   const now = new Date().toISOString();
   const imported = [];
   const skipped = [];
   const missingArtists = [];
 
-  for (const match of matches) {
+  for (const match of scan.matches) {
     const duplicate = await db.prepare("SELECT id FROM applications WHERE google_event_id = ? LIMIT 1")
       .bind(match.event.id).first();
     if (duplicate) { skipped.push({ eventId: match.event.id, reason: "already_imported" }); continue; }
@@ -107,7 +115,10 @@ export async function onRequestPost(context) {
     imported.push({ id, eventId: match.event.id, title: match.event.summary, artistName: match.mapping.artistName });
   }
 
-  return json({ imported, skipped, missingArtists: [...new Set(missingArtists)] });
+  return json({
+    imported, skipped, missingArtists: [...new Set(missingArtists)],
+    scannedCount: scan.scannedCount, calendarTitles: scan.calendarTitles,
+  });
 }
 
 export function onRequest(context) {
