@@ -31,8 +31,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=9" />
-    <link rel="stylesheet" href="/admin.css?v=17" />
-    <script src="/admin-script.js?v=13" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=18" />
+    <script src="/admin-script.js?v=14" defer></script>
   </head>
   <body class="review-page is-login">
     <div class="review-login" data-login>
@@ -102,7 +102,11 @@
       <main class="artists-shell admin-view" data-view="artists" hidden>
         <aside class="artists-rail">
           <div class="rail-heading"><p>01 / Approved customers</p><h1>artist<br /><em>directory.</em></h1></div>
-          <button class="add-artist-button" type="button" data-add-artist>add artist <b>＋</b></button>
+          <div class="artist-directory-actions">
+            <button class="add-artist-button" type="button" data-add-artist>add artist <b>＋</b></button>
+            <button class="calendar-import-button" type="button" data-import-calendar>sync named calendar sessions <b>↻</b></button>
+          </div>
+          <p class="calendar-import-status" data-import-calendar-status role="status"></p>
           <label class="artist-search"><span>Search artists</span><input type="search" placeholder="Name, email, or phone" data-artist-search /></label>
           <div class="artist-list" data-artist-list></div>
         </aside>

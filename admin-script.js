@@ -26,6 +26,8 @@ const artistForm = document.querySelector("[data-artist-form]");
 const artistFormError = document.querySelector("[data-artist-error]");
 const artistDialogKicker = document.querySelector("[data-artist-dialog-kicker]");
 const artistDialogTitle = document.querySelector("[data-artist-dialog-title]");
+const calendarImportButton = document.querySelector("[data-import-calendar]");
+const calendarImportStatus = document.querySelector("[data-import-calendar-status]");
 
 let applications = [];
 let artists = [];
@@ -487,6 +489,25 @@ document.querySelector("[data-add-artist]").addEventListener("click", () => {
   artistDialogTitle.innerHTML = "add an<br><em>artist.</em>";
   artistForm.querySelector("[data-artist-submit]").innerHTML = "save artist <b>↗︎</b>";
   artistDialog.showModal();
+});
+
+calendarImportButton.addEventListener("click", async () => {
+  calendarImportButton.disabled = true;
+  calendarImportStatus.textContent = "Checking Google Calendar…";
+  try {
+    const result = await request("/api/admin/calendar-import", { method: "POST" });
+    const refreshed = await request("/api/admin/artists");
+    artists = refreshed.artists || [];
+    renderArtistList(artistSearch.value);
+    renderDashboard();
+    const imported = result.imported?.length || 0;
+    const skipped = result.skipped?.length || 0;
+    calendarImportStatus.textContent = `${imported} session${imported === 1 ? "" : "s"} imported${skipped ? ` · ${skipped} already linked` : ""}.`;
+  } catch (error) {
+    calendarImportStatus.textContent = error.message;
+  } finally {
+    calendarImportButton.disabled = false;
+  }
 });
 
 artistDialog.addEventListener("click", (event) => {

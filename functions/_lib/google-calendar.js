@@ -98,6 +98,37 @@ export const getBusyPeriods = async (env, timeMin, timeMax) => {
   return calendar.busy || [];
 };
 
+export const listCalendarEvents = async (env, { query, timeMin, timeMax } = {}) => {
+  const accessToken = await getAccessToken(env);
+  const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
+  const events = [];
+  let pageToken = "";
+  do {
+    const params = new URLSearchParams({
+      singleEvents: "true",
+      showDeleted: "false",
+      orderBy: "startTime",
+      maxResults: "2500",
+      ...(query ? { q: query } : {}),
+      ...(timeMin ? { timeMin } : {}),
+      ...(timeMax ? { timeMax } : {}),
+      ...(pageToken ? { pageToken } : {}),
+    });
+    const response = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?${params}`,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+    );
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Google event listing failed (${response.status}): ${detail.slice(0, 500)}`);
+    }
+    const result = await response.json();
+    events.push(...(result.items || []));
+    pageToken = result.nextPageToken || "";
+  } while (pageToken);
+  return events;
+};
+
 // Google Calendar's numeric colorId is supported by the calendar.events scope.
 // The newer event-label lookup requires broader calendar metadata permissions,
 // so keep the human label as an internal hint and omit it from API payloads.
