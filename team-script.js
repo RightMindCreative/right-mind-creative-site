@@ -167,6 +167,13 @@ const setupPullToRefresh = (refresh) => {
   document.addEventListener('touchcancel', () => { tracking = false; if (!refreshing) reset(); });
 };
 setupPullToRefresh(load);
+const openLinkedSession = () => {
+  const params = new URLSearchParams(window.location.search);
+  const linkedId = params.get('session');
+  if (!linkedId || !sessions.some((item) => item.id === linkedId)) return;
+  setView(params.get('view') === 'requests' ? 'requests' : 'calendar');
+  openSession(linkedId);
+};
 const setView = (view) => {
   activeView = view;
   document.querySelectorAll('[data-view]').forEach((section) => { section.hidden = section.dataset.view !== view; });
@@ -176,7 +183,7 @@ const setView = (view) => {
 loginForm.addEventListener('submit', async (event) => {
   event.preventDefault(); loginError.textContent = '';
   const button = loginForm.querySelector('button'); button.disabled = true; button.textContent = 'opening…';
-  try { await request('/api/employee/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: loginForm.elements.password.value }) }); showApp(); setView('calendar'); await load(); }
+  try { await request('/api/employee/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: loginForm.elements.password.value }) }); showApp(); setView('calendar'); await load(); openLinkedSession(); }
   catch (error) { loginError.textContent = error.message; }
   finally { button.disabled = false; button.innerHTML = 'open schedule <b>↗︎</b>'; }
 });
@@ -212,4 +219,4 @@ window.setInterval(() => {
   if (!document.hidden && !app.hidden && !dialog.open) load().catch(() => {});
 }, 60000);
 
-(async () => { const session = await fetch('/api/employee/session').then((response) => response.json()).catch(() => ({ authenticated: false })); if (!session.authenticated) return showLogin(); showApp(); setView(activeView); load().catch(() => showLogin()); })();
+(async () => { const session = await fetch('/api/employee/session').then((response) => response.json()).catch(() => ({ authenticated: false })); if (!session.authenticated) return showLogin(); showApp(); setView(activeView); load().then(openLinkedSession).catch(() => showLogin()); })();
