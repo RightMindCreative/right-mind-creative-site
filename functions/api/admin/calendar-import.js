@@ -47,8 +47,11 @@ const loadMatches = async (env) => {
 };
 
 const findArtist = async (db, artistName) => db.prepare(`
-  SELECT * FROM manual_artists WHERE LOWER(TRIM(artist_name)) = LOWER(TRIM(?)) LIMIT 1
-`).bind(artistName).first();
+  SELECT * FROM manual_artists
+  WHERE LOWER(TRIM(artist_name)) = LOWER(TRIM(?))
+     OR LOWER(TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, ''))) = LOWER(TRIM(?))
+  LIMIT 1
+`).bind(artistName, artistName).first();
 
 const publicMatch = async (db, match) => {
   const existing = await db.prepare("SELECT id FROM applications WHERE google_event_id = ? LIMIT 1")
