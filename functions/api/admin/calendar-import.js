@@ -30,19 +30,21 @@ const eventRange = (event, timeZone) => {
 const loadMatches = async (env) => {
   const seen = new Set();
   const matches = [];
-  const events = await listCalendarEvents(env, { timeMin: TIME_MIN });
-  for (const event of events) {
-    const mapping = MATCHES.find((candidate) => candidate.test.test(event.summary || ""));
-    if (!mapping || seen.has(event.id)) continue;
-    const range = eventRange(event, env.BOOKING_TIME_ZONE || TIME_ZONE);
-    if (!range) continue;
-    seen.add(event.id);
-    matches.push({ event, mapping, range });
+  let scannedCount = 0;
+  for (const mapping of MATCHES) {
+    const events = await listCalendarEvents(env, { query: mapping.query, timeMin: TIME_MIN });
+    scannedCount += events.length;
+    for (const event of events) {
+      if (seen.has(event.id) || !mapping.test.test(event.summary || "")) continue;
+      const range = eventRange(event, env.BOOKING_TIME_ZONE || TIME_ZONE);
+      if (!range) continue;
+      seen.add(event.id);
+      matches.push({ event, mapping, range });
+    }
   }
   return {
     matches: matches.sort((a, b) => a.event.start.dateTime.localeCompare(b.event.start.dateTime)),
-    scannedCount: events.length,
-    calendarTitles: events.map((event) => event.summary).filter(Boolean).slice(0, 100),
+    scannedCount,
   };
 };
 
@@ -73,7 +75,6 @@ export async function onRequestGet(context) {
   const scan = await loadMatches(context.env);
   return json({
     scannedCount: scan.scannedCount,
-    calendarTitles: scan.calendarTitles,
     matches: await Promise.all(scan.matches.map((match) => publicMatch(context.env.APPLICATIONS_DB, match))),
   });
 }
@@ -120,7 +121,7 @@ export async function onRequestPost(context) {
 
   return json({
     imported, skipped, missingArtists: [...new Set(missingArtists)],
-    scannedCount: scan.scannedCount, calendarTitles: scan.calendarTitles,
+    scannedCount: scan.scannedCount,
   });
 }
 
