@@ -30,15 +30,14 @@ const eventRange = (event, timeZone) => {
 const loadMatches = async (env) => {
   const seen = new Set();
   const matches = [];
-  for (const mapping of MATCHES) {
-    const events = await listCalendarEvents(env, { query: mapping.query, timeMin: TIME_MIN });
-    for (const event of events) {
-      if (seen.has(event.id) || !mapping.test.test(event.summary || "")) continue;
-      const range = eventRange(event, env.BOOKING_TIME_ZONE || TIME_ZONE);
-      if (!range) continue;
-      seen.add(event.id);
-      matches.push({ event, mapping, range });
-    }
+  const events = await listCalendarEvents(env, { timeMin: TIME_MIN });
+  for (const event of events) {
+    const mapping = MATCHES.find((candidate) => candidate.test.test(event.summary || ""));
+    if (!mapping || seen.has(event.id)) continue;
+    const range = eventRange(event, env.BOOKING_TIME_ZONE || TIME_ZONE);
+    if (!range) continue;
+    seen.add(event.id);
+    matches.push({ event, mapping, range });
   }
   return matches.sort((a, b) => a.event.start.dateTime.localeCompare(b.event.start.dateTime));
 };
