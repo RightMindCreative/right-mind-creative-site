@@ -92,6 +92,14 @@ const adminStartOfWeek = (date) => {
   start.setDate(date.getDate() - date.getDay());
   return start;
 };
+const isUpcomingSession = (session) => {
+  const match = String(session.preferredTime || "").trim().match(/^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/i);
+  let hour = Number(match?.[1] || 0);
+  const minute = Number(match?.[2] || 0);
+  if (match?.[3]) hour = (hour % 12) + (match[3].toUpperCase() === "PM" ? 12 : 0);
+  const start = new Date(`${session.preferredDate}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`);
+  return Number.isFinite(start.getTime()) && start.getTime() >= Date.now();
+};
 
 const adminCalendarEvent = (session) => {
   const assigned = session.assignment?.state === "accepted";
@@ -130,10 +138,11 @@ const renderAdminCalendar = () => {
     for (let index = 0; index < 42; index += 1) { const day = new Date(gridStart); day.setDate(gridStart.getDate() + index); html += adminCalendarDay(day, month); }
   }
   adminCalendar.innerHTML = html;
-  const confirmed = calendarSessions.filter((session) => session.status === "confirmed").length;
+  const upcomingSessions = calendarSessions.filter(isUpcomingSession);
+  const confirmed = upcomingSessions.filter((session) => session.status === "confirmed").length;
   const pending = calendarSessions.filter((session) => !["confirmed", "approved", "payment_pending"].includes(session.status)).length;
   const assigned = calendarSessions.filter((session) => session.assignment?.state === "accepted").length;
-  adminCalendarSummary.innerHTML = [[calendarSessions.length, "active sessions"], [confirmed, "confirmed"], [pending, "pending"], [assigned, "Jake assigned"]].map(([value, label]) => `<article><span>${label}</span><strong>${value}</strong></article>`).join("");
+  adminCalendarSummary.innerHTML = [[upcomingSessions.length, "active sessions"], [confirmed, "confirmed"], [pending, "pending"], [assigned, "Jake assigned"]].map(([value, label]) => `<article><span>${label}</span><strong>${value}</strong></article>`).join("");
 };
 
 const request = async (url, options) => {
