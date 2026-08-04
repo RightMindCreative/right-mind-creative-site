@@ -4,7 +4,6 @@ const GOOGLE_CALENDAR_SCOPE = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.freebusy",
 ].join(" ");
-const labelCache = new Map();
 
 const encodeBase64Url = (value) => {
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
@@ -99,42 +98,20 @@ export const getBusyPeriods = async (env, timeMin, timeMax) => {
   return calendar.busy || [];
 };
 
-const resolveEventLabelId = async (env, labelName) => {
-  if (!labelName) return null;
-  const cacheKey = `${env.GOOGLE_CALENDAR_ID}:${String(labelName).toLowerCase()}`;
-  if (labelCache.has(cacheKey)) return labelCache.get(cacheKey);
-  const accessToken = await getAccessToken(env);
-  const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
-  const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}`,
-    { headers: { authorization: `Bearer ${accessToken}` } },
-  );
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Google calendar labels could not be read (${response.status}): ${detail.slice(0, 500)}`);
-  }
-  const calendar = await response.json();
-  const label = (calendar.labelProperties?.eventLabels || []).find(
-    (candidate) => String(candidate.name || "").toLowerCase() === String(labelName).toLowerCase(),
-  );
-  const id = label?.id || null;
-  labelCache.set(cacheKey, id);
-  return id;
-};
-
-const withEventLabel = async (env, event) => {
-  const { eventLabelName, ...payload } = event;
-  if (!eventLabelName) return payload;
-  const eventLabelId = await resolveEventLabelId(env, eventLabelName);
-  return eventLabelId ? { ...payload, eventLabelId } : payload;
+// Google Calendar's numeric colorId is supported by the calendar.events scope.
+// The newer event-label lookup requires broader calendar metadata permissions,
+// so keep the human label as an internal hint and omit it from API payloads.
+const withEventColor = (event) => {
+  const { eventLabelName: _eventLabelName, ...payload } = event;
+  return payload;
 };
 
 export const createCalendarEvent = async (env, event) => {
   const accessToken = await getAccessToken(env);
   const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
-  const payload = await withEventLabel(env, event);
+  const payload = withEventColor(event);
   const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?sendUpdates=none&eventLabelVersion=1`,
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?sendUpdates=none`,
     {
       method: "POST",
       headers: {
@@ -154,9 +131,9 @@ export const createCalendarEvent = async (env, event) => {
 export const updateCalendarEvent = async (env, eventId, changes) => {
   const accessToken = await getAccessToken(env);
   const calendarId = encodeURIComponent(env.GOOGLE_CALENDAR_ID);
-  const payload = await withEventLabel(env, changes);
+  const payload = withEventColor(changes);
   const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}?sendUpdates=none&eventLabelVersion=1`,
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(eventId)}?sendUpdates=none`,
     {
       method: "PATCH",
       headers: {
