@@ -134,6 +134,39 @@ const openSession = (id) => {
 
 const render = () => { renderSummary(); renderCalendar(); renderLists(); };
 const load = async () => { const payload = await request('/api/employee/schedule'); sessions = payload.sessions || []; render(); };
+const setupPullToRefresh = (refresh) => {
+  const indicator = document.querySelector('[data-pull-refresh]');
+  if (!indicator) return;
+  let startY = 0; let distance = 0; let tracking = false; let refreshing = false;
+  const reset = () => {
+    indicator.classList.remove('is-visible', 'is-ready', 'is-refreshing');
+    indicator.style.setProperty('--pull-distance', '0px');
+    indicator.querySelector('strong').textContent = 'pull to refresh'; distance = 0;
+  };
+  document.addEventListener('touchstart', (event) => {
+    if (refreshing || window.innerWidth > 900 || window.scrollY > 0 || app.hidden || event.touches.length !== 1) return;
+    startY = event.touches[0].clientY; tracking = true;
+  }, { passive: true });
+  document.addEventListener('touchmove', (event) => {
+    if (!tracking || event.touches.length !== 1) return;
+    const raw = event.touches[0].clientY - startY;
+    if (raw <= 0) { tracking = false; reset(); return; }
+    event.preventDefault(); distance = Math.min(110, raw * 0.55);
+    indicator.style.setProperty('--pull-distance', `${distance}px`); indicator.classList.add('is-visible');
+    indicator.classList.toggle('is-ready', distance >= 68);
+    indicator.querySelector('strong').textContent = distance >= 68 ? 'release to refresh' : 'pull to refresh';
+  }, { passive: false });
+  document.addEventListener('touchend', async () => {
+    if (!tracking) return; tracking = false;
+    if (distance < 68) { reset(); return; }
+    refreshing = true; indicator.classList.add('is-refreshing'); indicator.querySelector('strong').textContent = 'refreshing';
+    try { await refresh(); }
+    catch { indicator.querySelector('strong').textContent = 'refresh failed'; await new Promise((resolve) => window.setTimeout(resolve, 700)); }
+    finally { refreshing = false; window.setTimeout(reset, 220); }
+  });
+  document.addEventListener('touchcancel', () => { tracking = false; if (!refreshing) reset(); });
+};
+setupPullToRefresh(load);
 const setView = (view) => {
   activeView = view;
   document.querySelectorAll('[data-view]').forEach((section) => { section.hidden = section.dataset.view !== view; });
