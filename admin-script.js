@@ -338,6 +338,8 @@ const renderDecision = (application) => {
 
 const renderDetail = ({ application, files }) => {
   const name = application.artist_name || `${application.first_name} ${application.last_name}`;
+  const usesCalendar = application.category !== "mixing" && application.service !== "Custom Project";
+  const calendarStatus = application.calendar_sync_status || "not synced";
   detail.innerHTML = `
     <button class="detail-back" type="button" data-back>← back to applications</button>
     <div class="detail-hero">
@@ -359,6 +361,10 @@ const renderDetail = ({ application, files }) => {
       ${detailField("Stems / trackouts", application.stem_count)}
       ${detailField("Additional information", application.notes, true)}
     </div>
+    ${usesCalendar ? `<section class="calendar-sync-card">
+      <div><p class="detail-kicker">Calendar sync</p><strong>${escapeHtml(calendarStatus)}</strong>${application.calendar_sync_error ? `<small>${escapeHtml(application.calendar_sync_error)}</small>` : ""}</div>
+      <button type="button" data-retry-calendar>repair calendar sync <b>↗︎</b></button>
+    </section>` : ""}
     <section class="review-section"><div class="review-section-head"><div><p>03 / Submitted material</p><h3>listen &amp; look.</h3></div></div>${renderFiles(files)}</section>
     <section class="review-section"><div class="review-section-head"><div><p>04 / Online presence</p><h3>social preview.</h3></div></div>${renderSocial(application.social_links)}</section>
     ${renderDecision(application)}
@@ -514,6 +520,20 @@ detail.addEventListener("click", (event) => {
   if (back) {
     if (location.hash.startsWith("#application=")) history.back();
     else showInbox();
+    return;
+  }
+  const retryCalendar = event.target.closest("[data-retry-calendar]");
+  if (retryCalendar && selectedId) {
+    retryCalendar.disabled = true;
+    retryCalendar.textContent = "syncing…";
+    request("/api/admin/retry-calendar", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: selectedId }),
+    }).then(() => selectApplication(selectedId, false)).catch((error) => {
+      retryCalendar.textContent = error.message;
+      retryCalendar.disabled = false;
+    });
     return;
   }
   const decisionButton = event.target.closest("[data-decision]");

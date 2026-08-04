@@ -1,5 +1,4 @@
-import { CONFIRMED_BOOKING_COLOR_ID } from "../../_lib/application-notifications.js";
-import { updateCalendarEvent } from "../../_lib/google-calendar.js";
+import { reconcileApplicationCalendar } from "../../_lib/application-notifications.js";
 import { sendPaymentConfirmationEmail } from "../../_lib/payment-confirmation-email.js";
 import { verifyStripeEvent } from "../../_lib/stripe.js";
 
@@ -34,16 +33,26 @@ const confirmPayment = async (context, session) => {
     application.deposit_amount_paid_cents = session.amount_total;
   }
 
-  if (newlyPaid && application.google_event_id) {
+  if (newlyPaid) {
     try {
-      const artist = application.artist_name || `${application.first_name} ${application.last_name}`.trim();
-      await updateCalendarEvent(context.env, application.google_event_id, {
-        summary: `BOOKED · ${application.service} · ${artist}`,
-        colorId: context.env.BOOKING_CALENDAR_COLOR_ID || CONFIRMED_BOOKING_COLOR_ID,
-        eventLabelName: "Basil",
-        transparency: "opaque",
-      });
+      const files = await context.env.APPLICATIONS_DB.prepare(`
+        SELECT id, object_key, original_name, content_type, size_bytes
+        FROM application_files WHERE application_id = ? ORDER BY created_at ASC
+      `).bind(application.id).all();
+      const storedFiles = (files.results || []).map((file) => ({
+        id: file.id, objectKey: file.object_key, name: file.original_name,
+        type: file.content_type, size: file.size_bytes,
+      }));
+      const calendar = await reconcileApplicationCalendar(application, storedFiles, context.env);
+      await context.env.APPLICATIONS_DB.prepare(`
+        UPDATE applications SET google_event_id = ?, calendar_sync_status = ?,
+          calendar_sync_error = NULL, updated_at = ? WHERE id = ?
+      `).bind(calendar.eventId || null, calendar.status, new Date().toISOString(), application.id).run();
     } catch (error) {
+      await context.env.APPLICATIONS_DB.prepare(`
+        UPDATE applications SET calendar_sync_status = 'failed', calendar_sync_error = ?,
+          updated_at = ? WHERE id = ?
+      `).bind(String(error.message || error).slice(0, 500), new Date().toISOString(), application.id).run();
       console.error("Paid booking calendar update failed", { applicationId, error });
     }
   }

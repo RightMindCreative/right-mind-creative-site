@@ -4,6 +4,7 @@ import test from "node:test";
 import { matchingServices, serviceById } from "../functions/_lib/service-catalog.js";
 import { requireSimonService } from "../functions/_lib/simon-service-auth.js";
 import { SIMON_APPLICATION_STATUS } from "../functions/api/simon/bookings.js";
+import { addApplicationToCalendar } from "../functions/_lib/application-notifications.js";
 
 const context = (authorization = "", overrides = {}) => ({
   request: new Request("https://preview.example.pages.dev/api/simon/services", {
@@ -39,4 +40,9 @@ test("unconfigured service boundary fails closed", () => {
 
 test("owner-confirmed Simon requests create approved applications", () => {
   assert.equal(SIMON_APPLICATION_STATUS, "approved");
+});
+
+test("non-calendar application types never create calendar events", async () => {
+  const result = await addApplicationToCalendar({ usesCalendar: false }, [], {});
+  assert.deepEqual(result, { status: "not_required" });
 });

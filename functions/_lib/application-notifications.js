@@ -1,4 +1,9 @@
-import { calendarIsConfigured, createCalendarEvent } from "./google-calendar.js";
+import {
+  calendarIsConfigured,
+  createCalendarEvent,
+  deleteCalendarEvent,
+  updateCalendarEvent,
+} from "./google-calendar.js";
 
 const REQUEST_COLOR_ID = "6";
 export const DEPOSIT_PENDING_COLOR_ID = "5";
@@ -97,7 +102,59 @@ export const buildApplicationEvent = (application, files, env) => {
 };
 
 export const addApplicationToCalendar = async (application, files, env) => {
+  if (application.usesCalendar === false) return { status: "not_required" };
   if (!calendarIsConfigured(env)) return { status: "not_configured" };
   const event = await createCalendarEvent(env, buildApplicationEvent(application, files, env));
   return { status: "sent", eventId: event.id, eventLink: event.htmlLink };
+};
+
+export const calendarApplicationFromRow = (row) => ({
+  id: row.id,
+  createdAt: row.created_at,
+  category: row.category,
+  service: row.service,
+  serviceOption: row.service_option,
+  preferredDate: row.preferred_date,
+  preferredTime: row.preferred_time,
+  firstName: row.first_name,
+  lastName: row.last_name,
+  artistName: row.artist_name,
+  email: row.email,
+  phone: row.phone,
+  stemCount: row.stem_count,
+  socialLinks: row.social_links,
+  notes: row.notes,
+  usesCalendar: row.category !== "mixing" && row.service !== "Custom Project",
+});
+
+export const reconcileApplicationCalendar = async (row, files, env) => {
+  const application = calendarApplicationFromRow(row);
+  if (!application.usesCalendar) return { status: "not_required", eventId: null };
+
+  if (row.status === "declined") {
+    if (row.google_event_id) await deleteCalendarEvent(env, row.google_event_id);
+    return { status: "deleted", eventId: null };
+  }
+
+  let eventId = row.google_event_id;
+  let result = { status: "sent", eventId };
+  if (!eventId) {
+    result = await addApplicationToCalendar(application, files, env);
+    eventId = result.eventId;
+  }
+
+  if (eventId && ["approved", "payment_pending", "confirmed"].includes(row.status)) {
+    const artist = row.artist_name || `${row.first_name} ${row.last_name}`.trim();
+    const confirmed = row.status === "confirmed" || row.deposit_status === "paid";
+    await updateCalendarEvent(env, eventId, {
+      summary: `${confirmed ? "BOOKED" : "DEPOSIT PENDING"} · ${row.service} · ${artist}`,
+      colorId: confirmed
+        ? (env.BOOKING_CALENDAR_COLOR_ID || CONFIRMED_BOOKING_COLOR_ID)
+        : (env.DEPOSIT_PENDING_CALENDAR_COLOR_ID || DEPOSIT_PENDING_COLOR_ID),
+      eventLabelName: confirmed ? "Basil" : "Citron",
+      transparency: confirmed ? "opaque" : "transparent",
+    });
+  }
+
+  return { ...result, eventId };
 };

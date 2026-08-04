@@ -64,6 +64,10 @@
   .artist-detail{padding:24px var(--review-mobile-pad) 110px}
 }
 .detail-back{display:none}
+.calendar-sync-card{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-top:30px;padding:22px;border:1px solid rgba(255,255,255,.2);border-radius:22px;background:rgba(255,255,255,.04)}
+.calendar-sync-card>div{display:grid;gap:6px}.calendar-sync-card strong{text-transform:uppercase;letter-spacing:.12em}.calendar-sync-card small{max-width:620px;color:#c9796d;line-height:1.5}
+.calendar-sync-card button{padding:13px 17px;border:1px solid rgba(255,255,255,.3);border-radius:999px;color:#080808;background:#f1ece4;font-size:9px;text-transform:uppercase;letter-spacing:.14em;white-space:nowrap}.calendar-sync-card button:disabled{opacity:.55}
+@media(max-width:620px){.calendar-sync-card{align-items:stretch;flex-direction:column}.calendar-sync-card button{width:100%}}
 .decision-card{display:grid;gap:14px;margin:70px 0 0;padding-top:30px;border-top:1px solid rgba(255,255,255,.2)}
 .decision-actions{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .decision-button{display:flex;align-items:center;justify-content:space-between;gap:26px;min-width:190px;padding:15px 18px;border:1px solid rgba(255,255,255,.3);border-radius:999px;color:#fff;font-size:9px;text-transform:uppercase;letter-spacing:.14em;transition:.2s}

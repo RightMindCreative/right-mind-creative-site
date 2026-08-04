@@ -1,10 +1,7 @@
 import { requireAdmin } from "../../_lib/admin-auth.js";
 import {
-  addApplicationToCalendar,
-  CONFIRMED_BOOKING_COLOR_ID,
-  DEPOSIT_PENDING_COLOR_ID,
+  reconcileApplicationCalendar,
 } from "../../_lib/application-notifications.js";
-import { deleteCalendarEvent, updateCalendarEvent } from "../../_lib/google-calendar.js";
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
@@ -34,24 +31,6 @@ export async function onRequestPost(context) {
     ORDER BY created_at ASC
   `).bind(id).all();
 
-  const application = {
-    id: row.id,
-    createdAt: row.created_at,
-    category: row.category,
-    service: row.service,
-    serviceOption: row.service_option,
-    preferredDate: row.preferred_date,
-    preferredTime: row.preferred_time,
-    firstName: row.first_name,
-    lastName: row.last_name,
-    artistName: row.artist_name,
-    email: row.email,
-    phone: row.phone,
-    stemCount: row.stem_count,
-    socialLinks: row.social_links,
-    notes: row.notes,
-    usesCalendar: row.category !== "mixing" && row.service !== "Custom Project",
-  };
   const storedFiles = (files.results || []).map((file) => ({
     id: file.id,
     objectKey: file.object_key,
@@ -61,36 +40,8 @@ export async function onRequestPost(context) {
   }));
 
   try {
-    if (row.status === "declined") {
-      if (row.google_event_id) await deleteCalendarEvent(context.env, row.google_event_id);
-      await context.env.APPLICATIONS_DB.prepare(`
-        UPDATE applications
-        SET updated_at = ?, google_event_id = NULL,
-            calendar_sync_status = 'deleted', calendar_sync_error = NULL
-        WHERE id = ?
-      `).bind(new Date().toISOString(), id).run();
-      return json({ id, calendar: { status: "deleted" } });
-    }
-
-    let eventId = row.google_event_id;
-    let result = { status: "sent", eventId };
-    if (!eventId) {
-      result = await addApplicationToCalendar(application, storedFiles, context.env);
-      eventId = result.eventId;
-    }
-
-    if (eventId && ["approved", "payment_pending", "confirmed"].includes(row.status)) {
-      const artist = row.artist_name || `${row.first_name} ${row.last_name}`.trim();
-      const confirmed = row.status === "confirmed" || row.deposit_status === "paid";
-      await updateCalendarEvent(context.env, eventId, {
-        summary: `${confirmed ? "BOOKED" : "DEPOSIT PENDING"} · ${row.service} · ${artist}`,
-        colorId: confirmed
-          ? (context.env.BOOKING_CALENDAR_COLOR_ID || CONFIRMED_BOOKING_COLOR_ID)
-          : (context.env.DEPOSIT_PENDING_CALENDAR_COLOR_ID || DEPOSIT_PENDING_COLOR_ID),
-        eventLabelName: confirmed ? "Basil" : "Citron",
-        transparency: confirmed ? "opaque" : "transparent",
-      });
-    }
+    const result = await reconcileApplicationCalendar(row, storedFiles, context.env);
+    const eventId = result.eventId;
 
     await context.env.APPLICATIONS_DB.prepare(`
       UPDATE applications
