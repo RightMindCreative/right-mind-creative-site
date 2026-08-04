@@ -29,6 +29,15 @@ export async function onRequestPost(context) {
   );
 }
 
+export async function onRequestPatch(context) {
+  if (!await isEmployeeAuthorized(context.request, context.env)) {
+    return json({ error: "Authentication required." }, 401, { "set-cookie": clearEmployeeSessionCookie() });
+  }
+  return json({ authenticated: true, employee: employeeProfile }, 200, {
+    "set-cookie": await createEmployeeSessionCookie(context.env),
+  });
+}
+
 export function onRequestDelete() {
   return json({ authenticated: false }, 200, { "set-cookie": clearEmployeeSessionCookie() });
 }

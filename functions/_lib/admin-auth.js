@@ -1,5 +1,5 @@
 const COOKIE_NAME = "rmc_admin_session";
-const SESSION_SECONDS = 12 * 60 * 60;
+const SESSION_SECONDS = 5 * 60;
 
 const base64Url = (value) => {
   const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;

@@ -47,8 +47,35 @@ const request = async (url, options) => {
   return payload;
 };
 
-const showLogin = () => { document.body.classList.add('is-login'); login.hidden = false; app.hidden = true; };
-const showApp = () => { document.body.classList.remove('is-login'); login.hidden = true; app.hidden = false; };
+const showLogin = () => { disarmInactivity(); document.querySelectorAll('dialog[open]').forEach((item) => item.close()); document.body.classList.add('is-login'); login.hidden = false; app.hidden = true; };
+const showApp = () => { document.body.classList.remove('is-login'); login.hidden = true; app.hidden = false; armInactivity(); };
+
+const INACTIVITY_MS = 5 * 60 * 1000;
+const SESSION_REFRESH_MS = 45 * 1000;
+let inactivityTimer = 0; let lastActivityAt = 0; let lastSessionRefreshAt = 0; let expiringSession = false;
+function disarmInactivity() { window.clearTimeout(inactivityTimer); inactivityTimer = 0; lastActivityAt = 0; }
+async function expireInactiveSession() {
+  if (expiringSession || app.hidden) return;
+  expiringSession = true; disarmInactivity();
+  await fetch('/api/employee/session', { method: 'DELETE' }).catch(() => {});
+  loginForm.reset(); loginError.textContent = 'Your session timed out after 5 minutes of inactivity. Enter your passcode again.';
+  showLogin(); expiringSession = false;
+}
+function scheduleInactivityExpiry() { window.clearTimeout(inactivityTimer); inactivityTimer = window.setTimeout(expireInactiveSession, Math.max(0, INACTIVITY_MS - (Date.now() - lastActivityAt))); }
+function recordPrivateActivity() {
+  if (app.hidden || expiringSession) return;
+  lastActivityAt = Date.now(); scheduleInactivityExpiry();
+  if (lastActivityAt - lastSessionRefreshAt >= SESSION_REFRESH_MS) {
+    lastSessionRefreshAt = lastActivityAt;
+    fetch('/api/employee/session', { method: 'PATCH' }).then((response) => { if (response.status === 401) expireInactiveSession(); }).catch(() => {});
+  }
+}
+function armInactivity() { lastActivityAt = Date.now(); lastSessionRefreshAt = lastActivityAt; scheduleInactivityExpiry(); }
+['pointerdown', 'keydown', 'touchstart', 'scroll'].forEach((eventName) => document.addEventListener(eventName, recordPrivateActivity, { passive: true }));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || app.hidden) return;
+  if (Date.now() - lastActivityAt >= INACTIVITY_MS) expireInactiveSession(); else recordPrivateActivity();
+});
 
 const renderSummary = () => {
   const pendingRequests = sessions.filter((item) => item.assignment?.state === 'requested_owner').length;

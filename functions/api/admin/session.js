@@ -27,6 +27,13 @@ export async function onRequestPost(context) {
   );
 }
 
+export async function onRequestPatch(context) {
+  if (!await isAdminAuthorized(context.request, context.env)) {
+    return json({ error: "Authentication required." }, 401, { "set-cookie": clearSessionCookie() });
+  }
+  return json({ authenticated: true }, 200, { "set-cookie": await createSessionCookie(context.env) });
+}
+
 export function onRequestDelete() {
   return json(
     { authenticated: false },

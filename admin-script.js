@@ -157,6 +157,8 @@ const request = async (url, options) => {
 };
 
 const showLogin = () => {
+  disarmInactivity();
+  document.querySelectorAll("dialog[open]").forEach((dialogElement) => dialogElement.close());
   appView.hidden = true;
   loginView.hidden = false;
   document.body.classList.add("is-login");
@@ -166,7 +168,64 @@ const showApp = () => {
   loginView.hidden = true;
   appView.hidden = false;
   document.body.classList.remove("is-login");
+  armInactivity();
 };
+
+const INACTIVITY_MS = 5 * 60 * 1000;
+const SESSION_REFRESH_MS = 45 * 1000;
+let inactivityTimer = 0;
+let lastActivityAt = 0;
+let lastSessionRefreshAt = 0;
+let expiringSession = false;
+
+function disarmInactivity() {
+  window.clearTimeout(inactivityTimer);
+  inactivityTimer = 0;
+  lastActivityAt = 0;
+}
+
+async function expireInactiveSession() {
+  if (expiringSession || appView.hidden) return;
+  expiringSession = true;
+  disarmInactivity();
+  await fetch("/api/admin/session", { method: "DELETE" }).catch(() => {});
+  loginForm.reset();
+  loginError.textContent = "Your session timed out after 5 minutes of inactivity. Enter your passcode again.";
+  showLogin();
+  expiringSession = false;
+}
+
+function scheduleInactivityExpiry() {
+  window.clearTimeout(inactivityTimer);
+  inactivityTimer = window.setTimeout(expireInactiveSession, Math.max(0, INACTIVITY_MS - (Date.now() - lastActivityAt)));
+}
+
+function recordPrivateActivity() {
+  if (appView.hidden || expiringSession) return;
+  lastActivityAt = Date.now();
+  scheduleInactivityExpiry();
+  if (lastActivityAt - lastSessionRefreshAt >= SESSION_REFRESH_MS) {
+    lastSessionRefreshAt = lastActivityAt;
+    fetch("/api/admin/session", { method: "PATCH" }).then((response) => {
+      if (response.status === 401) expireInactiveSession();
+    }).catch(() => {});
+  }
+}
+
+function armInactivity() {
+  lastActivityAt = Date.now();
+  lastSessionRefreshAt = lastActivityAt;
+  scheduleInactivityExpiry();
+}
+
+["pointerdown", "keydown", "touchstart", "scroll"].forEach((eventName) => {
+  document.addEventListener(eventName, recordPrivateActivity, { passive: true });
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || appView.hidden) return;
+  if (Date.now() - lastActivityAt >= INACTIVITY_MS) expireInactiveSession();
+  else recordPrivateActivity();
+});
 
 const setView = (view, updateHistory = true) => {
   activeView = ["dashboard", "calendar", "applications", "artists"].includes(view) ? view : "dashboard";
