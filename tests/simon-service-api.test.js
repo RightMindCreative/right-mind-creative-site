@@ -12,6 +12,10 @@ import {
   applicationApprovedEvent,
   bookingConfirmedEvent,
 } from "../functions/_lib/simon-notifications.js";
+import {
+  onRequestPost as approveApplication,
+  SIMON_WAIVE_DECISION,
+} from "../functions/api/simon/applications/[id]/decision.js";
 
 const context = (authorization = "", overrides = {}) => ({
   request: new Request("https://preview.example.pages.dev/api/simon/services", {
@@ -90,4 +94,33 @@ test("confirmed bookings emit an idempotent contact event", () => {
   assert.equal(event.type, "booking.confirmed");
   assert.equal(event.id, "booking-confirmed:booking-1");
   assert.equal(event.application.email, "avery@example.com");
+});
+
+test("Simon application approval is limited to explicit deposit waivers", async () => {
+  assert.deepEqual(SIMON_WAIVE_DECISION, {
+    decision: "approved", waiveDeposit: true,
+    resultingStatus: "confirmed", depositStatus: "waived",
+  });
+  assert.match(decisionCopyFor("approved", { depositWaived: true }).body, /waived/i);
+  assert.doesNotMatch(decisionCopyFor("approved", { depositWaived: true }).body, /Stripe/i);
+  const unauthorized = await approveApplication(context(""));
+  assert.equal(unauthorized.status, 401);
+  const missingIdempotency = await approveApplication({
+    ...context("Bearer test-service-token"), params: { id: "app-1" },
+  });
+  assert.equal(missingIdempotency.status, 400);
+  const unsupported = await approveApplication({
+    ...context("Bearer test-service-token"),
+    params: { id: "app-1" },
+    request: new Request("https://www.rightmindcreative.co/api/simon/applications/app-1/decision", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-service-token",
+        "content-type": "application/json",
+        "idempotency-key": "approval-1",
+      },
+      body: JSON.stringify({ decision: "approved", waiveDeposit: false }),
+    }),
+  });
+  assert.equal(unsupported.status, 422);
 });

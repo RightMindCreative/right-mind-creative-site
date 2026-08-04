@@ -75,7 +75,14 @@ const detail = (label, value) => value ? `
 
 const render = (application) => {
   const identity = application.artist_name || `${application.first_name} ${application.last_name}`.trim();
-  const state = stateContent[application.status] || stateContent.new;
+  const baseState = stateContent[application.status] || stateContent.new;
+  const state = application.status === "confirmed" && application.deposit_status === "waived"
+    ? {
+        ...baseState,
+        summary: "Your application is approved, your deposit has been waived, and your session is confirmed.",
+        nextCopy: "We have your session and project details. No deposit is required.",
+      }
+    : baseState;
   document.title = `${identity} — Application Status`;
   document.querySelector("[data-artist-route]").textContent = `rightmindcreative.co / ${slug(identity)}`;
   document.querySelector("[data-greeting]").textContent = application.first_name

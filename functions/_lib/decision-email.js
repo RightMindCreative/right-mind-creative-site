@@ -13,11 +13,13 @@ const safeHeader = (value) => String(value || "").replace(/[\r\n]+/g, " ").trim(
 const escapeHtml = (value) => String(value || "").replace(/&/g, "&amp;")
   .replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-export const decisionCopyFor = (decision) => decision === "approved"
+export const decisionCopyFor = (decision, options = {}) => decision === "approved"
   ? {
       heading: "your application has been approved.",
-      body: "Your session has been approved and is being held while your deposit is pending. Open your secure status page to review the details and complete the deposit through Stripe.",
-      action: "pay booking deposit",
+      body: options.depositWaived
+        ? "We’d love to move forward with your project. Your deposit has been waived and your session is confirmed."
+        : "Your session has been approved and is being held while your deposit is pending. Open your secure status page to review the details and complete the deposit through Stripe.",
+      action: options.depositWaived ? "view approved application" : "pay booking deposit",
     }
   : {
       heading: "your application has been reviewed.",
@@ -25,8 +27,8 @@ export const decisionCopyFor = (decision) => decision === "approved"
       action: "view application status",
     };
 
-const buildMessage = ({ application, decision, statusUrl, sender }) => {
-  const copy = decisionCopyFor(decision);
+const buildMessage = ({ application, decision, statusUrl, sender, options }) => {
+  const copy = decisionCopyFor(decision, options);
   const firstName = application.first_name || application.firstName || "there";
   const subject = "Your Right Mind Creative application has been reviewed";
   const plain = [
@@ -65,7 +67,7 @@ export const decisionEmailIsConfigured = (env) => Boolean(
   && (env.GOOGLE_EMAIL_IMPERSONATED_USER || env.DECISION_EMAIL_FROM),
 );
 
-export const sendDecisionEmail = async (env, application, decision, statusUrl) => {
+export const sendDecisionEmail = async (env, application, decision, statusUrl, options = {}) => {
   const sender = env.DECISION_EMAIL_FROM || env.GOOGLE_EMAIL_IMPERSONATED_USER || DEFAULT_SENDER;
   const accessToken = await getGoogleAccessToken(env, {
     scope: GMAIL_SEND_SCOPE,
@@ -78,7 +80,7 @@ export const sendDecisionEmail = async (env, application, decision, statusUrl) =
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      raw: base64Url(buildMessage({ application, decision, statusUrl, sender })),
+      raw: base64Url(buildMessage({ application, decision, statusUrl, sender, options })),
     }),
   });
   if (!response.ok) {
