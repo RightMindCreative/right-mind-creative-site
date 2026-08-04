@@ -30,6 +30,26 @@ export const createDepositCheckout = async (env, application, origin) => {
   return result;
 };
 
+export const refundDeposit = async (env, application) => {
+  if (!application.stripe_payment_intent_id) throw new Error("This booking does not have a Stripe payment to refund.");
+  const response = await fetch(`${STRIPE_API}/refunds`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
+      "content-type": "application/x-www-form-urlencoded",
+      "idempotency-key": `application-refund-${application.id}`,
+    },
+    body: new URLSearchParams({
+      payment_intent: application.stripe_payment_intent_id,
+      reason: "requested_by_customer",
+      "metadata[application_id]": application.id,
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error?.message || `Stripe refund failed (${response.status}).`);
+  return result;
+};
+
 const hex = (bytes) => [...new Uint8Array(bytes)]
   .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 

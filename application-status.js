@@ -60,6 +60,13 @@ const stateContent = {
     nextCopy: "Every project is considered carefully. This decision only reflects the current application and studio fit.",
     activeStep: 2,
   },
+  cancelled: {
+    hero: "cancelled.",
+    summary: "This booking has been cancelled. If a deposit was collected, its refund is being returned through the original payment method.",
+    nextTitle: "need another date?",
+    nextCopy: "Submit a new application whenever you’re ready to request another session.",
+    activeStep: 4,
+  },
 };
 
 const detail = (label, value) => value ? `

@@ -13,6 +13,12 @@ const decisionDialogCopy = decisionDialog.querySelector("[data-confirm-copy]");
 const decisionConfirm = decisionDialog.querySelector("[data-confirm-decision]");
 const customDepositField = decisionDialog.querySelector("[data-custom-deposit]");
 const customDepositInput = decisionDialog.querySelector("[data-custom-deposit-input]");
+const bookingDialog = document.querySelector("[data-booking-dialog]");
+const bookingDialogTitle = bookingDialog.querySelector("[data-booking-title]");
+const bookingDialogCopy = bookingDialog.querySelector("[data-booking-copy]");
+const bookingOptions = bookingDialog.querySelector("[data-booking-options]");
+const bookingReschedule = bookingDialog.querySelector("[data-booking-reschedule]");
+const bookingMessage = bookingDialog.querySelector("[data-booking-message]");
 const passcodeInput = loginForm.elements.password;
 const views = [...document.querySelectorAll("[data-view]")];
 const routeButtons = [...document.querySelectorAll("[data-route]")];
@@ -39,6 +45,7 @@ let selectedId = "";
 let selectedArtistId = "";
 let editingArtistId = "";
 let currentArtist = null;
+let currentApplication = null;
 let activeView = "dashboard";
 let pendingDecision = "";
 let adminCalendarDate = new Date();
@@ -168,7 +175,7 @@ passcodeInput.addEventListener("input", () => {
 
 const renderList = () => {
   const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-  const completedStatuses = ["approved", "declined", "payment_pending", "confirmed"];
+  const completedStatuses = ["approved", "declined", "payment_pending", "confirmed", "cancelled"];
   const pending = applications.filter((application) => !completedStatuses.includes(application.status));
   const previous = applications.filter((application) => (
     completedStatuses.includes(application.status)
@@ -200,7 +207,7 @@ const renderList = () => {
 const artistName = (artist) => artist.artist_name || `${artist.first_name || ""} ${artist.last_name || ""}`.trim() || artist.email;
 
 const renderDashboard = () => {
-  const completedStatuses = ["approved", "declined", "payment_pending", "confirmed"];
+  const completedStatuses = ["approved", "declined", "payment_pending", "confirmed", "cancelled"];
   const pending = applications.filter((item) => !completedStatuses.includes(item.status));
   const awaitingDeposits = applications.filter((item) => item.status === "approved" || item.status === "payment_pending");
   const confirmed = calendarSessions.filter((item) => item.status === "confirmed");
@@ -382,7 +389,7 @@ const hydrateSocialPreviews = async (container) => {
 };
 
 const renderDecision = (application) => {
-  const decided = ["approved", "declined", "payment_pending", "confirmed"].includes(application.status);
+  const decided = ["approved", "declined", "payment_pending", "confirmed", "cancelled"].includes(application.status);
   const emailFailed = decided && application.decision_email_status === "failed";
   return `
     <section class="decision-card" data-decision-card>
@@ -395,6 +402,7 @@ const renderDecision = (application) => {
         `}
       </div>
       ${decided ? `<p class="decision-result">Application ${escapeHtml(application.status)}${application.deposit_status === "paid" ? " · deposit paid" : application.decision_email_status === "sent" ? " · applicant notified" : " · email delivery failed"}</p>` : ""}
+      ${["approved", "payment_pending", "confirmed"].includes(application.status) ? `<button class="manage-booking-button" type="button" data-manage-booking>${application.deposit_status === "paid" ? "manage confirmed booking" : "cancel approved application"} <b>↗︎</b></button>` : ""}
     </section>
   `;
 };
@@ -426,6 +434,7 @@ const renderAssignment = (application, assignment) => {
 };
 
 const renderDetail = ({ application, files, assignment }) => {
+  currentApplication = application;
   const name = application.artist_name || `${application.first_name} ${application.last_name}`;
   const usesCalendar = application.category !== "mixing" && application.service !== "Custom Project";
   const calendarStatus = application.calendar_sync_status || "not synced";
@@ -685,6 +694,24 @@ detail.addEventListener("click", (event) => {
     });
     return;
   }
+  if (event.target.closest("[data-manage-booking]") && selectedId) {
+    const application = currentApplication;
+    const paid = application?.deposit_status === "paid";
+    bookingDialogTitle.textContent = paid ? "change this booking?" : "cancel this application?";
+    bookingDialogCopy.textContent = paid
+      ? "The deposit has been paid. Choose whether to move the confirmed session or refund the full deposit and cancel it."
+      : "This will cancel the approved application and remove its pending calendar event. No payment has been collected.";
+    bookingOptions.innerHTML = paid
+      ? `<button type="button" data-booking-action="reschedule">reschedule booking <b>↗︎</b></button><button type="button" class="is-refund" data-booking-action="refund">refund deposit &amp; cancel <b>×</b></button>`
+      : `<button type="button" class="is-refund" data-booking-action="cancel">confirm cancellation <b>×</b></button>`;
+    bookingReschedule.hidden = true;
+    bookingReschedule.reset();
+    bookingReschedule.elements.date.value = application?.preferred_date || "";
+    bookingReschedule.elements.time.value = /^\d{2}:\d{2}$/.test(application?.preferred_time || "") ? application.preferred_time : "";
+    bookingMessage.textContent = "";
+    bookingDialog.showModal();
+    return;
+  }
   const decisionButton = event.target.closest("[data-decision]");
   if (!decisionButton || !selectedId) return;
   pendingDecision = decisionButton.dataset.decision;
@@ -702,6 +729,48 @@ detail.addEventListener("click", (event) => {
   decisionConfirm.textContent = approving ? "yes, approve & send" : "yes, decline & send";
   decisionConfirm.classList.toggle("is-decline", !approving);
   decisionDialog.showModal();
+});
+
+const completeBookingAction = async (action, fields = {}) => {
+  bookingMessage.textContent = action === "refund" ? "Refunding through Stripe…" : action === "reschedule" ? "Updating the calendar…" : "Cancelling…";
+  bookingDialog.querySelectorAll("button,input").forEach((control) => { control.disabled = true; });
+  try {
+    await request(`/api/admin/applications/${encodeURIComponent(selectedId)}/booking`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, ...fields }),
+    });
+    const [applicationPayload, schedulePayload] = await Promise.all([request("/api/admin/applications"), request("/api/admin/schedule")]);
+    applications = applicationPayload.applications || [];
+    calendarSessions = schedulePayload.sessions || [];
+    renderList(); renderDashboard(); renderAdminCalendar();
+    bookingDialog.close();
+    await selectApplication(selectedId, false);
+  } catch (error) {
+    bookingMessage.textContent = error.message;
+  } finally {
+    bookingDialog.querySelectorAll("button,input").forEach((control) => { control.disabled = false; });
+  }
+};
+
+bookingDialog.addEventListener("click", (event) => {
+  if (event.target === bookingDialog || event.target.closest("[data-close-booking]")) { bookingDialog.close(); return; }
+  const actionButton = event.target.closest("[data-booking-action]");
+  if (!actionButton) return;
+  const action = actionButton.dataset.bookingAction;
+  if (action === "reschedule") {
+    bookingOptions.hidden = true;
+    bookingReschedule.hidden = false;
+    bookingDialogTitle.textContent = "choose a new time.";
+    bookingDialogCopy.textContent = "The confirmed Google Calendar event will move to this date and time.";
+    return;
+  }
+  completeBookingAction(action);
+});
+
+bookingDialog.addEventListener("close", () => { bookingOptions.hidden = false; bookingReschedule.hidden = true; });
+bookingReschedule.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const fields = Object.fromEntries(new FormData(bookingReschedule));
+  completeBookingAction("reschedule", fields);
 });
 
 decisionDialog.addEventListener("click", (event) => {

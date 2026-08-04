@@ -31,8 +31,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=9" />
-    <link rel="stylesheet" href="/admin.css?v=19" />
-    <script src="/admin-script.js?v=18" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=20" />
+    <script src="/admin-script.js?v=19" defer></script>
   </head>
   <body class="review-page is-login">
     <div class="review-login" data-login>
@@ -158,6 +158,22 @@
           <button type="button" data-confirm-decision>confirm &amp; send</button>
           <button type="button" data-cancel-decision>go back</button>
         </div>
+      </div>
+    </dialog>
+
+    <dialog class="decision-dialog booking-dialog" data-booking-dialog>
+      <div class="decision-dialog-card">
+        <p class="detail-kicker">Booking controls</p>
+        <h2 data-booking-title>manage this booking.</h2>
+        <p data-booking-copy></p>
+        <div class="booking-options" data-booking-options></div>
+        <form class="booking-reschedule" data-booking-reschedule hidden>
+          <label><span>New session date</span><input name="date" type="date" required /></label>
+          <label><span>New start time</span><input name="time" type="time" step="3600" required /></label>
+          <button type="submit">confirm new time <b>↗︎</b></button>
+        </form>
+        <p class="booking-message" data-booking-message role="status"></p>
+        <div class="decision-dialog-actions"><button type="button" data-close-booking>go back</button></div>
       </div>
     </dialog>
 
