@@ -9,6 +9,7 @@ import { stripeIsConfigured } from "../../_lib/stripe.js";
 import { requireSimonService } from "../../_lib/simon-service-auth.js";
 import { serviceById } from "../../_lib/service-catalog.js";
 import { onRequestGet as scopedAvailability } from "./availability.js";
+import { notifySimonOfBooking } from "../../_lib/simon-notifications.js";
 
 const clean = (value, length) => String(value || "").trim().slice(0, length);
 export const SIMON_APPLICATION_STATUS = "approved";
@@ -169,6 +170,8 @@ export async function onRequestPost(context) {
     console.error("Simon booking request failed", { applicationId: id, error });
     return json({ error: "The booking request could not be created." }, 500);
   }
+
+  context.waitUntil(notifySimonOfBooking(application, context.env));
 
   try {
     const calendar = await addApplicationToCalendar(application, [], context.env);
