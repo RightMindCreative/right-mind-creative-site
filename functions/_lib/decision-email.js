@@ -13,11 +13,11 @@ const safeHeader = (value) => String(value || "").replace(/[\r\n]+/g, " ").trim(
 const escapeHtml = (value) => String(value || "").replace(/&/g, "&amp;")
   .replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-const copyFor = (decision) => decision === "approved"
+export const decisionCopyFor = (decision) => decision === "approved"
   ? {
       heading: "your application has been approved.",
-      body: "We’d love to move forward with your project. Your application status page will contain the next steps as they become available.",
-      action: "view approved application",
+      body: "Your session has been approved and is being held while your deposit is pending. Open your secure status page to review the details and complete the deposit through Stripe.",
+      action: "pay booking deposit",
     }
   : {
       heading: "your application has been reviewed.",
@@ -26,8 +26,8 @@ const copyFor = (decision) => decision === "approved"
     };
 
 const buildMessage = ({ application, decision, statusUrl, sender }) => {
-  const copy = copyFor(decision);
-  const firstName = application.first_name || "there";
+  const copy = decisionCopyFor(decision);
+  const firstName = application.first_name || application.firstName || "there";
   const subject = "Your Right Mind Creative application has been reviewed";
   const plain = [
     `Hi ${firstName},`, "", copy.heading, "", copy.body, "",

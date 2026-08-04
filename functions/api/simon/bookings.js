@@ -1,11 +1,23 @@
 import { json } from "../../_lib/admin-auth.js";
-import { addApplicationToCalendar } from "../../_lib/application-notifications.js";
+import {
+  addApplicationToCalendar, DEPOSIT_PENDING_COLOR_ID,
+} from "../../_lib/application-notifications.js";
+import { decisionEmailIsConfigured, sendDecisionEmail } from "../../_lib/decision-email.js";
+import { depositForApplication } from "../../_lib/deposits.js";
+import { updateCalendarEvent } from "../../_lib/google-calendar.js";
+import { stripeIsConfigured } from "../../_lib/stripe.js";
 import { requireSimonService } from "../../_lib/simon-service-auth.js";
 import { serviceById } from "../../_lib/service-catalog.js";
 import { onRequestGet as scopedAvailability } from "./availability.js";
 
 const clean = (value, length) => String(value || "").trim().slice(0, length);
 export const SIMON_APPLICATION_STATUS = "approved";
+export const SIMON_PAYMENT_STATUS = "pending";
+export const simonPaymentIsConfigured = (env) => Boolean(
+  decisionEmailIsConfigured(env)
+  && stripeIsConfigured(env)
+  && env.STRIPE_WEBHOOK_SECRET
+);
 
 const hashRequest = async (payload) => {
   const digest = await crypto.subtle.digest(
@@ -30,6 +42,7 @@ const responseFor = (application, client, service, startsAt, endsAt) => ({
     endsAt,
     status: application.status,
     paymentStatus: application.paymentStatus,
+    notificationStatus: application.notificationStatus,
   },
 });
 
@@ -73,6 +86,9 @@ export async function onRequestPost(context) {
       || !/^\S+@\S+\.\S+$/.test(client.email)) {
     return json({ error: "The booking request is incomplete or invalid." }, 422);
   }
+  if (!simonPaymentIsConfigured(context.env)) {
+    return json({ error: "Deposit email or Stripe Checkout is not configured." }, 503);
+  }
 
   const availabilityUrl = new URL("/api/simon/availability", context.request.url);
   availabilityUrl.searchParams.set("serviceId", service.id);
@@ -103,8 +119,17 @@ export async function onRequestPost(context) {
     phone: client.phone, stemCount: "", socialLinks: "",
     notes: "Created and owner-approved by Simon through the scoped service API.", usesCalendar: true,
   };
+  let depositAmount;
+  try {
+    depositAmount = depositForApplication(application);
+  } catch (error) {
+    return json({ error: error.message }, 422);
+  }
   const result = responseFor(
-    { id, status: SIMON_APPLICATION_STATUS, paymentStatus: "not_required" },
+    {
+      id, status: SIMON_APPLICATION_STATUS, paymentStatus: SIMON_PAYMENT_STATUS,
+      notificationStatus: "pending",
+    },
     client, service, payload.startsAt, endsAt,
   );
 
@@ -114,12 +139,16 @@ export async function onRequestPost(context) {
         INSERT INTO applications (
           id, created_at, updated_at, status, category, service, service_option,
           preferred_date, preferred_time, first_name, last_name, artist_name,
-          email, phone, notes, email_notification_status, public_status_token
-        ) VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?)
+          email, phone, notes, email_notification_status, public_status_token,
+          decided_at, decision_email_status, deposit_amount_cents,
+          deposit_currency, deposit_status
+        ) VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disabled', ?,
+          ?, 'sending', ?, 'usd', 'pending')
       `).bind(
         id, now, now, service.category, service.name, application.serviceOption,
         preferredDate, preferredTime, firstName, lastName, client.name,
         client.email, client.phone, application.notes, statusToken,
+        now, depositAmount,
       ),
       context.env.APPLICATIONS_DB.prepare(`
         INSERT INTO simon_idempotency
@@ -147,12 +176,50 @@ export async function onRequestPost(context) {
       UPDATE applications SET google_event_id = ?, calendar_sync_status = ?,
         calendar_sync_error = NULL, updated_at = ? WHERE id = ?
     `).bind(calendar.eventId || null, calendar.status, new Date().toISOString(), id).run();
+    if (calendar.eventId) {
+      await updateCalendarEvent(context.env, calendar.eventId, {
+        summary: `DEPOSIT PENDING · ${service.name} · ${client.name}`,
+        colorId: context.env.DEPOSIT_PENDING_CALENDAR_COLOR_ID || DEPOSIT_PENDING_COLOR_ID,
+        eventLabelName: "Citron",
+        transparency: "transparent",
+      });
+    }
   } catch (error) {
     await context.env.APPLICATIONS_DB.prepare(`
       UPDATE applications SET calendar_sync_status = 'failed', calendar_sync_error = ?,
         updated_at = ? WHERE id = ?
     `).bind(String(error.message || error).slice(0, 500), new Date().toISOString(), id).run();
     console.error("Simon booking calendar sync failed", { applicationId: id, error });
+  }
+
+  const statusUrl = `${context.env.PUBLIC_SITE_URL || new URL(context.request.url).origin}`
+    + `/application-status?token=${encodeURIComponent(statusToken)}`;
+  try {
+    const message = await sendDecisionEmail(context.env, application, "approved", statusUrl);
+    result.booking.notificationStatus = "sent";
+    await context.env.APPLICATIONS_DB.batch([
+      context.env.APPLICATIONS_DB.prepare(`
+        UPDATE applications
+        SET decision_email_status = 'sent', decision_email_message_id = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(message.id || null, new Date().toISOString(), id),
+      context.env.APPLICATIONS_DB.prepare(`
+        UPDATE simon_idempotency SET response_json = ? WHERE idempotency_key = ?
+      `).bind(JSON.stringify(result), idempotencyKey),
+    ]);
+  } catch (error) {
+    result.booking.notificationStatus = "failed";
+    await context.env.APPLICATIONS_DB.batch([
+      context.env.APPLICATIONS_DB.prepare(`
+        UPDATE applications
+        SET decision_email_status = 'failed', decision_email_error = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(String(error.message || error).slice(0, 1000), new Date().toISOString(), id),
+      context.env.APPLICATIONS_DB.prepare(`
+        UPDATE simon_idempotency SET response_json = ? WHERE idempotency_key = ?
+      `).bind(JSON.stringify(result), idempotencyKey),
+    ]);
+    console.error("Simon deposit email failed", { applicationId: id, error });
   }
 
   return json(result, 201);
