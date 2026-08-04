@@ -15,8 +15,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=9" />
-    <link rel="stylesheet" href="/team.css?v=1" />
-    <script src="/team-script.js?v=1" defer></script>
+    <link rel="stylesheet" href="/team.css?v=2" />
+    <script src="/team-script.js?v=2" defer></script>
   </head>
   <body class="team-page is-login">
     <section class="team-login" data-login>
@@ -52,7 +52,18 @@
         <section class="team-view" data-view="calendar">
           <div class="calendar-toolbar">
             <div><p class="team-kicker">All active requests</p><h2 data-month-label></h2></div>
-            <div><button type="button" data-month="-1" aria-label="Previous month">←</button><button type="button" data-today>today</button><button type="button" data-month="1" aria-label="Next month">→</button></div>
+            <div class="calendar-controls">
+              <div class="calendar-mode-toggle" aria-label="Calendar range">
+                <button type="button" data-calendar-mode="day">day</button>
+                <button type="button" data-calendar-mode="week">week</button>
+                <button type="button" data-calendar-mode="month">month</button>
+              </div>
+              <div class="calendar-navigation">
+                <button type="button" data-period="-1" aria-label="Previous period">←</button>
+                <button type="button" data-today>today</button>
+                <button type="button" data-period="1" aria-label="Next period">→</button>
+              </div>
+            </div>
           </div>
           <div class="team-calendar" data-calendar></div>
           <div class="calendar-legend"><span><i class="is-pending"></i> pending application</span><span><i class="is-approved"></i> approved / deposit pending</span><span><i class="is-confirmed"></i> confirmed</span><span><i class="is-mine"></i> assigned to you</span></div>

@@ -14,8 +14,9 @@ const dialogDetail = document.querySelector('[data-session-detail]');
 let sessions = [];
 let selectedId = '';
 let activeView = 'calendar';
-let visibleMonth = new Date();
-visibleMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1);
+let visibleDate = new Date();
+visibleDate = new Date(visibleDate.getFullYear(), visibleDate.getMonth(), visibleDate.getDate());
+let calendarMode = window.matchMedia('(max-width: 620px)').matches ? 'day' : 'month';
 
 const escapeHtml = (value) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const formatDate = (value, options = {}) => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', ...options }).format(new Date(`${value}T12:00:00`));
@@ -30,6 +31,12 @@ const assignmentLabel = (assignment) => ({
   requested_owner: 'Ryan requested you', requested_employee: 'request sent to Ryan',
   accepted: 'assigned to you', declined: 'you declined', cancelled: 'cancelled',
 }[assignment?.state] || 'open');
+const dateKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const startOfWeek = (date) => {
+  const start = new Date(date);
+  start.setDate(date.getDate() - date.getDay());
+  return start;
+};
 
 const request = async (url, options) => {
   const response = await fetch(url, options);
@@ -55,19 +62,44 @@ const renderSummary = () => {
 
 const eventButton = (session) => `<button type="button" class="calendar-event is-${statusClass(session.status)} ${session.assignment?.state === 'accepted' ? 'is-mine' : ''}" data-session="${escapeHtml(session.id)}"><strong>${escapeHtml(formatTime(session.preferredTime))} · ${escapeHtml(session.artistName)}</strong><small>${escapeHtml(session.service)} · ${escapeHtml(assignmentLabel(session.assignment))}</small></button>`;
 
+const calendarDay = (day, month = day.getMonth()) => {
+  const key = dateKey(day);
+  const todayKey = dateKey(new Date());
+  const daySessions = sessions.filter((session) => session.preferredDate === key);
+  const emptyMessage = calendarMode === 'day' && !daySessions.length ? '<p class="calendar-empty">No sessions scheduled for this day.</p>' : '';
+  return `<div class="calendar-day ${day.getMonth() !== month ? 'is-outside' : ''} ${key === todayKey ? 'is-today' : ''} ${daySessions.length ? 'has-events' : ''}"><span class="day-number"><b>${day.toLocaleDateString('en-US', { weekday: 'short' })}</b>${day.getDate()}</span><div class="day-events">${daySessions.map(eventButton).join('')}${emptyMessage}</div></div>`;
+};
+
 const renderCalendar = () => {
-  monthLabel.textContent = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(visibleMonth);
-  const year = visibleMonth.getFullYear();
-  const month = visibleMonth.getMonth();
-  const first = new Date(year, month, 1);
-  const gridStart = new Date(year, month, 1 - first.getDay());
-  const todayKey = new Date().toLocaleDateString('en-CA');
-  let html = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => `<div class="calendar-weekday">${day}</div>`).join('');
-  for (let index = 0; index < 42; index += 1) {
-    const day = new Date(gridStart); day.setDate(gridStart.getDate() + index);
-    const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
-    const daySessions = sessions.filter((session) => session.preferredDate === key);
-    html += `<div class="calendar-day ${day.getMonth() !== month ? 'is-outside' : ''} ${key === todayKey ? 'is-today' : ''} ${daySessions.length ? 'has-events' : ''}"><span class="day-number">${day.getDate()}</span><div class="day-events">${daySessions.map(eventButton).join('')}</div></div>`;
+  calendar.dataset.mode = calendarMode;
+  document.querySelectorAll('[data-calendar-mode]').forEach((button) => button.classList.toggle('is-active', button.dataset.calendarMode === calendarMode));
+  let html = '';
+
+  if (calendarMode === 'day') {
+    monthLabel.textContent = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).format(visibleDate);
+    html = calendarDay(visibleDate);
+  } else if (calendarMode === 'week') {
+    const weekStart = startOfWeek(visibleDate);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+    const startLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(weekStart);
+    const endLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(weekEnd);
+    monthLabel.textContent = `${startLabel} — ${endLabel}`;
+    html = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => `<div class="calendar-weekday">${day}</div>`).join('');
+    for (let index = 0; index < 7; index += 1) {
+      const day = new Date(weekStart); day.setDate(weekStart.getDate() + index);
+      html += calendarDay(day);
+    }
+  } else {
+    const year = visibleDate.getFullYear();
+    const month = visibleDate.getMonth();
+    const first = new Date(year, month, 1);
+    const gridStart = new Date(year, month, 1 - first.getDay());
+    monthLabel.textContent = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(first);
+    html = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => `<div class="calendar-weekday">${day}</div>`).join('');
+    for (let index = 0; index < 42; index += 1) {
+      const day = new Date(gridStart); day.setDate(gridStart.getDate() + index);
+      html += calendarDay(day, month);
+    }
   }
   calendar.innerHTML = html;
 };
@@ -119,8 +151,15 @@ loginForm.addEventListener('submit', async (event) => {
 document.addEventListener('click', (event) => {
   const viewButton = event.target.closest('[data-view-button]'); if (viewButton) setView(viewButton.dataset.viewButton);
   const sessionButton = event.target.closest('[data-session]'); if (sessionButton) openSession(sessionButton.dataset.session);
-  const monthButton = event.target.closest('[data-month]'); if (monthButton) { visibleMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + Number(monthButton.dataset.month), 1); renderCalendar(); }
-  if (event.target.closest('[data-today]')) { const now = new Date(); visibleMonth = new Date(now.getFullYear(), now.getMonth(), 1); renderCalendar(); }
+  const modeButton = event.target.closest('[data-calendar-mode]'); if (modeButton) { calendarMode = modeButton.dataset.calendarMode; renderCalendar(); }
+  const periodButton = event.target.closest('[data-period]');
+  if (periodButton) {
+    const direction = Number(periodButton.dataset.period);
+    if (calendarMode === 'month') visibleDate = new Date(visibleDate.getFullYear(), visibleDate.getMonth() + direction, 1);
+    else visibleDate.setDate(visibleDate.getDate() + direction * (calendarMode === 'week' ? 7 : 1));
+    renderCalendar();
+  }
+  if (event.target.closest('[data-today]')) { const now = new Date(); visibleDate = new Date(now.getFullYear(), now.getMonth(), now.getDate()); renderCalendar(); }
   if (event.target.closest('[data-close]')) dialog.close();
 });
 
