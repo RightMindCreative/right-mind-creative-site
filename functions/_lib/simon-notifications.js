@@ -22,7 +22,28 @@ export const applicationSubmittedEvent = (application, env) => {
   };
 };
 
-export async function notifySimonOfApplication(application, env, fetchImpl = fetch) {
+const artistContactEvent = (application, type, idPrefix) => ({
+  id: `${idPrefix}:${application.id}`,
+  type,
+  application: {
+    id: application.id,
+    firstName: application.first_name || application.firstName || "",
+    lastName: application.last_name || application.lastName || "",
+    artistName: application.artist_name || application.artistName || "",
+    email: application.email || "",
+    phone: application.phone || "",
+  },
+});
+
+export const applicationApprovedEvent = (application) => (
+  artistContactEvent(application, "application.approved", "application-approved")
+);
+
+export const bookingConfirmedEvent = (application) => (
+  artistContactEvent(application, "booking.confirmed", "booking-confirmed")
+);
+
+const notifySimon = async (event, applicationId, env, fetchImpl) => {
   const config = notificationConfig(env);
   if (!config.url || !config.secret) return { status: "disabled" };
 
@@ -33,21 +54,29 @@ export async function notifySimonOfApplication(application, env, fetchImpl = fet
         "content-type": "application/json",
         "x-simon-webhook-secret": config.secret,
       },
-      body: JSON.stringify(applicationSubmittedEvent(application, env)),
+      body: JSON.stringify(event),
     });
     if (!response.ok) {
       console.error("Simon application notification rejected", {
-        applicationId: application.id,
-        status: response.status,
+        applicationId, status: response.status,
       });
       return { status: "failed", responseStatus: response.status };
     }
     return { status: "sent" };
   } catch (error) {
-    console.error("Simon application notification failed", {
-      applicationId: application.id,
-      error,
-    });
+    console.error("Simon application notification failed", { applicationId, error });
     return { status: "failed" };
   }
+};
+
+export async function notifySimonOfApplication(application, env, fetchImpl = fetch) {
+  return notifySimon(applicationSubmittedEvent(application, env), application.id, env, fetchImpl);
+}
+
+export async function notifySimonOfApproval(application, env, fetchImpl = fetch) {
+  return notifySimon(applicationApprovedEvent(application), application.id, env, fetchImpl);
+}
+
+export async function notifySimonOfBooking(application, env, fetchImpl = fetch) {
+  return notifySimon(bookingConfirmedEvent(application), application.id, env, fetchImpl);
 }

@@ -8,6 +8,10 @@ import { requireSimonService } from "../functions/_lib/simon-service-auth.js";
 import {
   SIMON_APPLICATION_STATUS, SIMON_PAYMENT_STATUS, simonPaymentIsConfigured,
 } from "../functions/api/simon/bookings.js";
+import {
+  applicationApprovedEvent,
+  bookingConfirmedEvent,
+} from "../functions/_lib/simon-notifications.js";
 
 const context = (authorization = "", overrides = {}) => ({
   request: new Request("https://preview.example.pages.dev/api/simon/services", {
@@ -63,4 +67,27 @@ test("Simon deposit handoff requires email, Stripe, and verified webhooks", () =
 test("non-calendar application types never create calendar events", async () => {
   const result = await addApplicationToCalendar({ usesCalendar: false }, [], {});
   assert.deepEqual(result, { status: "not_required" });
+});
+
+test("approved applications emit a minimal contact event", () => {
+  const event = applicationApprovedEvent({
+    id: "app-1", first_name: "Jordan", last_name: "Lee",
+    artist_name: "J Lee", email: "jordan@example.com", phone: "+14025550100",
+  });
+  assert.equal(event.type, "application.approved");
+  assert.equal(event.id, "application-approved:app-1");
+  assert.deepEqual(event.application, {
+    id: "app-1", firstName: "Jordan", lastName: "Lee",
+    artistName: "J Lee", email: "jordan@example.com", phone: "+14025550100",
+  });
+});
+
+test("confirmed bookings emit an idempotent contact event", () => {
+  const event = bookingConfirmedEvent({
+    id: "booking-1", firstName: "Avery", lastName: "Jones",
+    artistName: "AJ", email: "avery@example.com", phone: "+14025550101",
+  });
+  assert.equal(event.type, "booking.confirmed");
+  assert.equal(event.id, "booking-confirmed:booking-1");
+  assert.equal(event.application.email, "avery@example.com");
 });

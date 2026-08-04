@@ -1,6 +1,7 @@
 import { reconcileApplicationCalendar } from "../../_lib/application-notifications.js";
 import { sendPaymentConfirmationEmail } from "../../_lib/payment-confirmation-email.js";
 import { verifyStripeEvent } from "../../_lib/stripe.js";
+import { notifySimonOfBooking } from "../../_lib/simon-notifications.js";
 
 const text = (body, status = 200) => new Response(body, { status, headers: { "content-type": "text/plain" } });
 
@@ -31,6 +32,7 @@ const confirmPayment = async (context, session) => {
     application.deposit_status = "paid";
     application.deposit_paid_at = paidAt;
     application.deposit_amount_paid_cents = session.amount_total;
+    context.waitUntil(notifySimonOfBooking(application, context.env));
   }
 
   if (newlyPaid) {

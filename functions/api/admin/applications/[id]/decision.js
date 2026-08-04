@@ -2,6 +2,7 @@ import { json, requireAdmin } from "../../../../_lib/admin-auth.js";
 import { reconcileApplicationCalendar } from "../../../../_lib/application-notifications.js";
 import { decisionEmailIsConfigured, sendDecisionEmail } from "../../../../_lib/decision-email.js";
 import { depositForApplication } from "../../../../_lib/deposits.js";
+import { notifySimonOfApproval } from "../../../../_lib/simon-notifications.js";
 
 const validDecisions = new Set(["approved", "declined"]);
 
@@ -22,6 +23,7 @@ export async function onRequestPost(context) {
   ).bind(context.params.id).first();
   if (!application) return json({ error: "Application not found." }, 404);
   if (application.status === decision && application.decision_email_status === "sent") {
+    if (decision === "approved") context.waitUntil(notifySimonOfApproval(application, context.env));
     return json({ application, duplicate: true });
   }
   if (["approved", "declined"].includes(application.status) && application.status !== decision) {
@@ -53,6 +55,7 @@ export async function onRequestPost(context) {
     decision, decidedAt, decidedAt, statusToken, depositAmount,
     decision === "approved" ? "pending" : "not_required", application.id,
   ).run();
+  if (decision === "approved") context.waitUntil(notifySimonOfApproval(application, context.env));
 
   try {
     const files = await context.env.APPLICATIONS_DB.prepare(`
