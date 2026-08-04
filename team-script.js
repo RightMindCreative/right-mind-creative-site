@@ -159,7 +159,6 @@ document.addEventListener('click', (event) => {
     else visibleDate.setDate(visibleDate.getDate() + direction * (calendarMode === 'week' ? 7 : 1));
     renderCalendar();
   }
-  if (event.target.closest('[data-today]')) { const now = new Date(); visibleDate = new Date(now.getFullYear(), now.getMonth(), now.getDate()); renderCalendar(); }
   if (event.target.closest('[data-close]')) dialog.close();
 });
 

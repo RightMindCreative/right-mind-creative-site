@@ -625,9 +625,6 @@ appView.addEventListener("click", (event) => {
     renderAdminCalendar();
     return;
   }
-  if (event.target.closest("[data-admin-today]")) {
-    const now = new Date(); adminCalendarDate = new Date(now.getFullYear(), now.getMonth(), now.getDate()); renderAdminCalendar(); return;
-  }
   const route = event.target.closest("[data-route]");
   if (route) { setView(route.dataset.route); return; }
   const applicationLink = event.target.closest("[data-application-link]");
