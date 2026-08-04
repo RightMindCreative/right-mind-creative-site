@@ -28,15 +28,22 @@ const artistDialogKicker = document.querySelector("[data-artist-dialog-kicker]")
 const artistDialogTitle = document.querySelector("[data-artist-dialog-title]");
 const calendarImportButton = document.querySelector("[data-import-calendar]");
 const calendarImportStatus = document.querySelector("[data-import-calendar-status]");
+const adminCalendar = document.querySelector("[data-admin-calendar]");
+const adminCalendarLabel = document.querySelector("[data-admin-calendar-label]");
+const adminCalendarSummary = document.querySelector("[data-admin-calendar-summary]");
 
 let applications = [];
 let artists = [];
+let calendarSessions = [];
 let selectedId = "";
 let selectedArtistId = "";
 let editingArtistId = "";
 let currentArtist = null;
 let activeView = "dashboard";
 let pendingDecision = "";
+let adminCalendarDate = new Date();
+adminCalendarDate = new Date(adminCalendarDate.getFullYear(), adminCalendarDate.getMonth(), adminCalendarDate.getDate());
+let adminCalendarMode = window.matchMedia("(max-width: 620px)").matches ? "day" : "month";
 const mobileReview = window.matchMedia("(max-width: 900px)");
 
 const escapeHtml = (value) => String(value ?? "")
@@ -69,6 +76,59 @@ const formatTime = (value) => {
   }).format(new Date(2026, 0, 1, hours, minutes));
 };
 
+const adminCalendarDateKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const adminCalendarStatus = (status) => status === "confirmed"
+  ? "confirmed"
+  : ["approved", "payment_pending"].includes(status) ? "approved" : "pending";
+const adminStartOfWeek = (date) => {
+  const start = new Date(date);
+  start.setDate(date.getDate() - date.getDay());
+  return start;
+};
+
+const adminCalendarEvent = (session) => {
+  const assigned = session.assignment?.state === "accepted";
+  const label = `${formatTime(session.preferredTime)} · ${session.artistName} · ${session.service}`;
+  return `<button type="button" class="admin-calendar-event is-${adminCalendarStatus(session.status)} ${assigned ? "is-assigned" : ""}" data-admin-session="${escapeHtml(session.id)}" aria-label="${escapeHtml(label)}"><strong>${escapeHtml(formatTime(session.preferredTime))} · ${escapeHtml(session.artistName)}</strong><small>${escapeHtml(session.service)}${assigned ? " · Jake" : ""}</small></button>`;
+};
+
+const adminCalendarDay = (day, month = day.getMonth()) => {
+  const key = adminCalendarDateKey(day);
+  const daySessions = calendarSessions.filter((session) => session.preferredDate === key);
+  const empty = adminCalendarMode === "day" && !daySessions.length ? `<p class="admin-calendar-empty">No sessions scheduled for this day.</p>` : "";
+  return `<div class="admin-calendar-day ${day.getMonth() !== month ? "is-outside" : ""} ${key === adminCalendarDateKey(new Date()) ? "is-today" : ""} ${daySessions.length ? "has-events" : ""}"><span class="admin-day-number"><b>${day.toLocaleDateString("en-US", { weekday: "short" })}</b>${day.getDate()}</span><div class="admin-day-events">${daySessions.map(adminCalendarEvent).join("")}${empty}</div></div>`;
+};
+
+const renderAdminCalendar = () => {
+  if (!adminCalendar) return;
+  adminCalendar.dataset.mode = adminCalendarMode;
+  document.querySelectorAll("[data-admin-calendar-mode]").forEach((button) => button.classList.toggle("is-active", button.dataset.adminCalendarMode === adminCalendarMode));
+  let html = "";
+  if (adminCalendarMode === "day") {
+    adminCalendarLabel.textContent = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(adminCalendarDate);
+    html = adminCalendarDay(adminCalendarDate);
+  } else if (adminCalendarMode === "week") {
+    const weekStart = adminStartOfWeek(adminCalendarDate);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+    adminCalendarLabel.textContent = `${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(weekStart)} — ${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(weekEnd)}`;
+    html = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((name) => `<div class="admin-calendar-weekday">${name}</div>`).join("");
+    for (let index = 0; index < 7; index += 1) { const day = new Date(weekStart); day.setDate(weekStart.getDate() + index); html += adminCalendarDay(day); }
+  } else {
+    const year = adminCalendarDate.getFullYear();
+    const month = adminCalendarDate.getMonth();
+    const first = new Date(year, month, 1);
+    const gridStart = new Date(year, month, 1 - first.getDay());
+    adminCalendarLabel.textContent = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(first);
+    html = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((name) => `<div class="admin-calendar-weekday">${name}</div>`).join("");
+    for (let index = 0; index < 42; index += 1) { const day = new Date(gridStart); day.setDate(gridStart.getDate() + index); html += adminCalendarDay(day, month); }
+  }
+  adminCalendar.innerHTML = html;
+  const confirmed = calendarSessions.filter((session) => session.status === "confirmed").length;
+  const pending = calendarSessions.filter((session) => !["confirmed", "approved", "payment_pending"].includes(session.status)).length;
+  const assigned = calendarSessions.filter((session) => session.assignment?.state === "accepted").length;
+  adminCalendarSummary.innerHTML = [[calendarSessions.length, "active sessions"], [confirmed, "confirmed"], [pending, "pending"], [assigned, "Jake assigned"]].map(([value, label]) => `<article><span>${label}</span><strong>${value}</strong></article>`).join("");
+};
+
 const request = async (url, options) => {
   const response = await fetch(url, options);
   if (response.status === 401) {
@@ -93,11 +153,12 @@ const showApp = () => {
 };
 
 const setView = (view, updateHistory = true) => {
-  activeView = ["dashboard", "applications", "artists"].includes(view) ? view : "dashboard";
+  activeView = ["dashboard", "calendar", "applications", "artists"].includes(view) ? view : "dashboard";
   views.forEach((section) => { section.hidden = section.dataset.view !== activeView; });
   routeButtons.forEach((button) => button.classList.toggle("is-active", button.dataset.route === activeView));
   appView.classList.remove("is-detail", "is-artist-detail");
   if (updateHistory) history.pushState({ view: activeView }, "", activeView === "dashboard" ? "#dashboard" : `#${activeView}`);
+  if (activeView === "calendar") renderAdminCalendar();
   window.scrollTo(0, 0);
 };
 
@@ -142,12 +203,12 @@ const renderDashboard = () => {
   const completedStatuses = ["approved", "declined", "payment_pending", "confirmed"];
   const pending = applications.filter((item) => !completedStatuses.includes(item.status));
   const awaitingDeposits = applications.filter((item) => item.status === "approved" || item.status === "payment_pending");
-  const confirmed = applications.filter((item) => item.status === "confirmed");
+  const confirmed = calendarSessions.filter((item) => item.status === "confirmed");
   dashboardStats.innerHTML = [
     ["Pending applications", pending.length, "applications"],
     ["Approved artists", artists.length, "artists"],
     ["Awaiting deposits", awaitingDeposits.length, "applications"],
-    ["Confirmed sessions", confirmed.length, "applications"],
+    ["Confirmed sessions", confirmed.length, "calendar"],
   ].map(([label, value, route], index) => `<button type="button" class="stat-card" data-route="${route}"><span>0${index + 1}</span><strong>${value}</strong><p>${label}</p></button>`).join("");
 
   const recent = [...applications].sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at)).slice(0, 5);
@@ -426,12 +487,16 @@ const selectApplication = async (id, navigate = true) => {
 };
 
 const loadApplications = async () => {
-  const [applicationPayload, artistPayload] = await Promise.all([request("/api/admin/applications"), request("/api/admin/artists")]);
+  const [applicationPayload, artistPayload, schedulePayload] = await Promise.all([
+    request("/api/admin/applications"), request("/api/admin/artists"), request("/api/admin/schedule"),
+  ]);
   applications = applicationPayload.applications || [];
   artists = artistPayload.artists || [];
+  calendarSessions = schedulePayload.sessions || [];
   renderList();
   renderArtistList();
   renderDashboard();
+  renderAdminCalendar();
   await routeFromHash();
 };
 
@@ -439,14 +504,14 @@ const routeFromHash = async () => {
   const params = new URLSearchParams(location.hash.replace(/^#/, ""));
   const applicationId = params.get("application");
   const artistId = params.get("artist");
-  if (applicationId && applications.some((application) => application.id === applicationId)) {
+  if (applicationId) {
     setView("applications", false); await selectApplication(applicationId, false); return;
   }
   if (artistId && artists.some((artist) => artist.id === artistId)) {
     setView("artists", false); await selectArtist(artistId, false); return;
   }
   const hashView = location.hash.slice(1);
-  setView(["applications", "artists"].includes(hashView) ? hashView : "dashboard", false);
+  setView(["calendar", "applications", "artists"].includes(hashView) ? hashView : "dashboard", false);
 };
 
 loginForm.addEventListener("submit", async (event) => {
@@ -496,10 +561,12 @@ calendarImportButton.addEventListener("click", async () => {
   calendarImportStatus.textContent = "Checking Google Calendar…";
   try {
     const result = await request("/api/admin/calendar-import", { method: "POST" });
-    const refreshed = await request("/api/admin/artists");
+    const [refreshed, refreshedSchedule] = await Promise.all([request("/api/admin/artists"), request("/api/admin/schedule")]);
     artists = refreshed.artists || [];
+    calendarSessions = refreshedSchedule.sessions || [];
     renderArtistList(artistSearch.value);
     renderDashboard();
+    renderAdminCalendar();
     const imported = result.imported?.length || 0;
     const skipped = result.skipped?.length || 0;
     calendarImportStatus.textContent = `${imported} session${imported === 1 ? "" : "s"} imported${skipped ? ` · ${skipped} already linked` : ""}.`;
@@ -541,6 +608,26 @@ artistForm.addEventListener("submit", async (event) => {
 });
 
 appView.addEventListener("click", (event) => {
+  const calendarSession = event.target.closest("[data-admin-session]");
+  if (calendarSession) {
+    setView("applications", false);
+    history.pushState({ applicationId: calendarSession.dataset.adminSession }, "", `#application=${encodeURIComponent(calendarSession.dataset.adminSession)}`);
+    selectApplication(calendarSession.dataset.adminSession, false);
+    return;
+  }
+  const calendarModeButton = event.target.closest("[data-admin-calendar-mode]");
+  if (calendarModeButton) { adminCalendarMode = calendarModeButton.dataset.adminCalendarMode; renderAdminCalendar(); return; }
+  const calendarPeriodButton = event.target.closest("[data-admin-period]");
+  if (calendarPeriodButton) {
+    const direction = Number(calendarPeriodButton.dataset.adminPeriod);
+    if (adminCalendarMode === "month") adminCalendarDate = new Date(adminCalendarDate.getFullYear(), adminCalendarDate.getMonth() + direction, 1);
+    else adminCalendarDate.setDate(adminCalendarDate.getDate() + direction * (adminCalendarMode === "week" ? 7 : 1));
+    renderAdminCalendar();
+    return;
+  }
+  if (event.target.closest("[data-admin-today]")) {
+    const now = new Date(); adminCalendarDate = new Date(now.getFullYear(), now.getMonth(), now.getDate()); renderAdminCalendar(); return;
+  }
   const route = event.target.closest("[data-route]");
   if (route) { setView(route.dataset.route); return; }
   const applicationLink = event.target.closest("[data-application-link]");

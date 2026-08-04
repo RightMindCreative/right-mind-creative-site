@@ -31,8 +31,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css?v=9" />
-    <link rel="stylesheet" href="/admin.css?v=18" />
-    <script src="/admin-script.js?v=16" defer></script>
+    <link rel="stylesheet" href="/admin.css?v=19" />
+    <script src="/admin-script.js?v=17" defer></script>
   </head>
   <body class="review-page is-login">
     <div class="review-login" data-login>
@@ -53,6 +53,7 @@
         <a class="wordmark" href="/index.html">right mind creative.</a>
         <nav class="admin-nav" aria-label="Admin sections">
           <button type="button" data-route="dashboard">Dashboard</button>
+          <button type="button" data-route="calendar">Calendar</button>
           <button type="button" data-route="applications">Applications <i data-count>0</i></button>
           <button type="button" data-route="artists">Artists</button>
         </nav>
@@ -73,8 +74,37 @@
           <button type="button" class="workspace-card is-artists" data-route="artists">
             <span>02 / Directory</span><h2>artists.</h2><p>Contact information and project history for every approved customer.</p><b>open directory ↗︎</b>
           </button>
+          <button type="button" class="workspace-card is-calendar" data-route="calendar">
+            <span>03 / Schedule</span><h2>calendar.</h2><p>See every request, deposit-pending session, confirmed booking, and team assignment.</p><b>open calendar ↗︎</b>
+          </button>
         </section>
         <section class="dashboard-recent"><div class="dashboard-section-heading"><p>03 / Recent activity</p><h2>latest<br /><em>movement.</em></h2></div><div data-recent></div></section>
+      </main>
+
+      <main class="admin-calendar-view admin-view" data-view="calendar" hidden>
+        <section class="admin-calendar-intro">
+          <div><p class="detail-kicker">Studio schedule · Central time</p><h1>studio<br /><em>calendar.</em></h1></div>
+          <div class="admin-calendar-summary" data-admin-calendar-summary></div>
+        </section>
+        <section class="admin-calendar-panel">
+          <div class="admin-calendar-toolbar">
+            <div><p class="detail-kicker">All active sessions</p><h2 data-admin-calendar-label></h2></div>
+            <div class="admin-calendar-controls">
+              <div class="admin-calendar-mode-toggle" aria-label="Calendar range">
+                <button type="button" data-admin-calendar-mode="day">day</button>
+                <button type="button" data-admin-calendar-mode="week">week</button>
+                <button type="button" data-admin-calendar-mode="month">month</button>
+              </div>
+              <div class="admin-calendar-navigation">
+                <button type="button" data-admin-period="-1" aria-label="Previous period">←</button>
+                <button type="button" data-admin-today>today</button>
+                <button type="button" data-admin-period="1" aria-label="Next period">→</button>
+              </div>
+            </div>
+          </div>
+          <div class="admin-calendar" data-admin-calendar></div>
+          <div class="admin-calendar-legend"><span><i class="is-pending"></i> pending application</span><span><i class="is-approved"></i> approved / deposit pending</span><span><i class="is-confirmed"></i> confirmed</span><span><i class="is-assigned"></i> assigned to Jake</span></div>
+        </section>
       </main>
 
       <main class="review-shell admin-view" data-view="applications" hidden>
