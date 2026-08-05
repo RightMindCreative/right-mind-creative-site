@@ -33,21 +33,19 @@ export async function onRequestPost(context) {
     await db.prepare(`UPDATE session_assignments
       SET state = 'cancelled', response_note = ?, responded_at = ?, updated_at = ? WHERE id = ?`)
       .bind(note, now, now, existing.id).run();
+  } else if (existing) {
+    await db.prepare(`UPDATE session_assignments SET
+      employee_slug = ?, employee_name = ?, state = 'requested_owner',
+      requested_by = 'owner', request_note = ?, response_note = NULL,
+      requested_at = ?, responded_at = NULL, updated_at = ? WHERE id = ?`)
+      .bind(employeeProfile.slug, employeeProfile.name, note, now, now, existing.id).run();
   } else {
-    await db.prepare(`
-      INSERT INTO session_assignments
-        (id, application_id, employee_slug, employee_name, state, requested_by,
-         request_note, requested_at, updated_at)
-      VALUES (?, ?, ?, ?, 'requested_owner', 'owner', ?, ?, ?)
-      ON CONFLICT(application_id) DO UPDATE SET
-        employee_slug = excluded.employee_slug, employee_name = excluded.employee_name,
-        state = 'requested_owner', requested_by = 'owner', request_note = excluded.request_note,
-        response_note = NULL, requested_at = excluded.requested_at, responded_at = NULL,
-        updated_at = excluded.updated_at
-    `).bind(
-      existing?.id || crypto.randomUUID(), application.id, employeeProfile.slug,
-      employeeProfile.name, note, now, now,
-    ).run();
+    await db.prepare(`INSERT INTO session_assignments
+      (id, application_id, employee_slug, employee_name, state, requested_by,
+       request_note, requested_at, updated_at)
+      VALUES (?, ?, ?, ?, 'requested_owner', 'owner', ?, ?, ?)`)
+      .bind(crypto.randomUUID(), application.id, employeeProfile.slug,
+        employeeProfile.name, note, now, now).run();
   }
   const assignment = await db.prepare(
     "SELECT * FROM session_assignments WHERE application_id = ?",
@@ -56,6 +54,9 @@ export async function onRequestPost(context) {
 }
 
 export function onRequest(context) {
-  if (context.request.method === "POST") return onRequestPost(context);
+  if (context.request.method === "POST") return onRequestPost(context).catch((error) => {
+    console.error("Admin engineer assignment failed", { applicationId: context.params.id, error });
+    return json({ error: "The engineer request could not be saved. Please refresh and try again." }, 500);
+  });
   return json({ error: "Method not allowed." }, 405);
 }

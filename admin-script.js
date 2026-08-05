@@ -151,7 +151,10 @@ const request = async (url, options) => {
     showLogin();
     throw new Error("Authentication required.");
   }
-  const payload = await response.json();
+  const type = response.headers.get("content-type") || "";
+  const payload = type.includes("application/json")
+    ? await response.json()
+    : { error: response.ok ? "The server returned an unreadable response." : "The server could not complete that request." };
   if (!response.ok) throw new Error(payload.error || "Something went wrong.");
   return payload;
 };
