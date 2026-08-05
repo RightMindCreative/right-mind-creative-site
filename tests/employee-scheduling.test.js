@@ -54,3 +54,15 @@ test("owner assignment requests produce a unique Simon notification", () => {
   assert.match(event.assignment.responseUrl, /\/team\/\?session=app-1/);
   assert.match(event.id, /2026-08-05T12:00:00Z/);
 });
+
+test("imported 24-hour calendar times produce a deliverable assignment event", () => {
+  const event = engineerAssignmentRequestedEvent(
+    { id: "assign-2", employee_name: "Jake Kaiser", updated_at: "2026-08-05T12:41:11Z" },
+    {
+      id: "app-2", artist_name: "Elizabeth Weiss", service: "Calendar Session",
+      preferred_date: "2026-07-31", preferred_time: "16:00",
+    },
+    { PUBLIC_SITE_URL: "https://www.rightmindcreative.co" },
+  );
+  assert.equal(event.assignment.startsAt, "2026-07-31T16:00:00-05:00");
+});

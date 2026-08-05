@@ -6,15 +6,17 @@ const notificationConfig = (env) => ({
 
 const employeeSessionStartsAt = (date, time) => {
   const match = String(time || "").match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-  if (!match) return "";
-  let hour = Number(match[1]);
-  if (match[3].toUpperCase() === "PM" && hour !== 12) hour += 12;
-  if (match[3].toUpperCase() === "AM" && hour === 12) hour = 0;
+  const twentyFourHour = String(time || "").match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match && !twentyFourHour) return "";
+  let hour = Number((match || twentyFourHour)[1]);
+  const minute = (match || twentyFourHour)[2];
+  if (match?.[3].toUpperCase() === "PM" && hour !== 12) hour += 12;
+  if (match?.[3].toUpperCase() === "AM" && hour === 12) hour = 0;
   const probe = new Date(`${date}T12:00:00Z`);
   const zoneName = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Chicago", timeZoneName: "longOffset",
   }).formatToParts(probe).find((part) => part.type === "timeZoneName")?.value || "GMT-06:00";
-  return `${date}T${String(hour).padStart(2, "0")}:${match[2]}:00${zoneName.replace("GMT", "")}`;
+  return `${date}T${String(hour).padStart(2, "0")}:${minute}:00${zoneName.replace("GMT", "")}`;
 };
 
 export const applicationSubmittedEvent = (application, env) => {
