@@ -1,6 +1,7 @@
 import { json } from "../../_lib/admin-auth.js";
 import { employeeProfile, requireEmployee } from "../../_lib/employee-auth.js";
 import { calendarEligibleApplication, ensureEmployeeScheduling } from "../../_lib/employee-scheduling.js";
+import { notifySimonOfEngineerResponse } from "../../_lib/simon-notifications.js";
 
 const allowedActions = new Set(["request", "accept", "decline"]);
 
@@ -54,7 +55,10 @@ export async function onRequestPost(context) {
   const saved = await db.prepare(
     "SELECT * FROM session_assignments WHERE application_id = ? AND employee_slug = ?",
   ).bind(applicationId, employeeProfile.slug).first();
-  return json({ assignment: saved });
+  const notification = action === "request"
+    ? { status: "not_applicable" }
+    : await notifySimonOfEngineerResponse(saved, application, context.env);
+  return json({ assignment: saved, notificationStatus: notification.status });
 }
 
 export function onRequest(context) {

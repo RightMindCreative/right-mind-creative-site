@@ -2,6 +2,7 @@ import { json } from "../../_lib/admin-auth.js";
 import { employeeProfile } from "../../_lib/employee-auth.js";
 import { calendarEligibleApplication, ensureEmployeeScheduling } from "../../_lib/employee-scheduling.js";
 import { requireSimonService } from "../../_lib/simon-service-auth.js";
+import { notifySimonOfEngineerResponse } from "../../_lib/simon-notifications.js";
 
 const clean = (value, length = 500) => String(value || "").trim().slice(0, length);
 const teamUrl = (context, applicationId) => {
@@ -39,6 +40,40 @@ export async function onRequestPost(context) {
   const idempotencyKey = clean(context.request.headers.get("idempotency-key"), 200);
   if (!idempotencyKey) return json({ error: "An Idempotency-Key header is required." }, 400);
   const payload = await context.request.json().catch(() => ({}));
+  const responseAction = clean(payload.action, 20).toLowerCase();
+  if (["accept", "decline"].includes(responseAction)) {
+    const db = context.env.APPLICATIONS_DB;
+    await ensureEmployeeScheduling(db);
+    const pending = await db.prepare(`
+      SELECT sa.*, a.preferred_date, a.preferred_time, a.service_option, a.service,
+        a.artist_name, a.first_name, a.last_name
+      FROM session_assignments sa JOIN applications a ON a.id = sa.application_id
+      WHERE sa.employee_slug = ? AND sa.state = 'requested_owner'
+      ORDER BY sa.requested_at DESC LIMIT 2
+    `).bind(employeeProfile.slug).all();
+    const matches = pending.results || [];
+    if (matches.length !== 1) {
+      return json({ error: matches.length
+        ? "More than one engineer request is awaiting a response. Use the website link."
+        : "No engineer request is awaiting a response." }, 409);
+    }
+    const [assignment] = matches;
+    const now = new Date().toISOString();
+    const state = responseAction === "accept" ? "accepted" : "declined";
+    await db.batch([
+      db.prepare(`UPDATE session_assignments
+        SET state = ?, response_note = ?, responded_at = ?, updated_at = ? WHERE id = ?`)
+        .bind(state, clean(payload.note, 1000) || null, now, now, assignment.id),
+      db.prepare(`INSERT INTO simon_api_audit
+        (id, created_at, action, request_id, idempotency_key, application_id, outcome)
+        VALUES (?, ?, 'engineer_assignment.respond', ?, ?, ?, ?)`)
+        .bind(crypto.randomUUID(), now, context.request.headers.get("x-request-id") || "",
+          idempotencyKey, assignment.application_id, state),
+    ]);
+    const saved = { ...assignment, state, response_note: clean(payload.note, 1000) || null };
+    const notification = await notifySimonOfEngineerResponse(saved, assignment, context.env);
+    return json({ assignment: assignmentResponse(context, saved, assignment), notificationStatus: notification.status });
+  }
   const startsAt = new Date(payload.startsAt || "");
   if (Number.isNaN(startsAt.getTime())) return json({ error: "A valid session start is required." }, 422);
 
