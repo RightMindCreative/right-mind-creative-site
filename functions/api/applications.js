@@ -11,12 +11,17 @@ const ALLOWED_FILE_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/zip",
   "audio/aac",
+  "audio/aif",
+  "audio/aiff",
   "audio/flac",
   "audio/m4a",
   "audio/mp4",
   "audio/mpeg",
   "audio/ogg",
   "audio/wav",
+  "audio/vnd.wave",
+  "audio/x-aif",
+  "audio/x-aiff",
   "audio/x-m4a",
   "audio/x-wav",
   "image/gif",
@@ -25,6 +30,18 @@ const ALLOWED_FILE_TYPES = new Set([
   "image/webp",
   "text/plain",
 ]);
+const ALLOWED_FILE_EXTENSIONS = new Set([
+  "aac", "aif", "aiff", "doc", "docx", "flac", "gif", "jpeg", "jpg",
+  "m4a", "mp3", "mp4", "ogg", "pdf", "png", "txt", "wav", "wave",
+  "webp", "zip",
+]);
+
+export const allowedApplicationFile = (file) => {
+  const type = String(file?.type || "").toLowerCase();
+  const extension = String(file?.name || "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || "";
+  return ALLOWED_FILE_TYPES.has(type)
+    || ((!type || type === "application/octet-stream") && ALLOWED_FILE_EXTENSIONS.has(extension));
+};
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
@@ -135,8 +152,8 @@ export async function onRequestPost(context) {
   if (totalBytes > MAX_TOTAL_FILE_BYTES) {
     return json({ error: "Uploaded files must total 50 MB or less." }, 413);
   }
-  if (files.some((file) => file.type && !ALLOWED_FILE_TYPES.has(file.type))) {
-    return json({ error: "One or more uploaded file types are not supported." }, 415);
+  if (files.some((file) => !allowedApplicationFile(file))) {
+    return json({ error: "One or more uploaded file types are not supported. WAV, MP3, AIF, and AIFF files are accepted." }, 415);
   }
 
   const id = crypto.randomUUID();
