@@ -1,6 +1,7 @@
 import { json, requireAdmin } from "../../../../_lib/admin-auth.js";
 import { employeeProfile } from "../../../../_lib/employee-auth.js";
 import { calendarEligibleApplication, ensureEmployeeScheduling } from "../../../../_lib/employee-scheduling.js";
+import { notifySimonOfEngineerAssignment } from "../../../../_lib/simon-notifications.js";
 
 const actions = new Set(["request", "accept", "decline", "cancel"]);
 
@@ -50,7 +51,10 @@ export async function onRequestPost(context) {
   const assignment = await db.prepare(
     "SELECT * FROM session_assignments WHERE application_id = ?",
   ).bind(application.id).first();
-  return json({ assignment });
+  const notification = action === "request"
+    ? await notifySimonOfEngineerAssignment(assignment, application, context.env)
+    : { status: "not_required" };
+  return json({ assignment, notification });
 }
 
 export function onRequest(context) {

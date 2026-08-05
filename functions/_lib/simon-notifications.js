@@ -4,6 +4,19 @@ const notificationConfig = (env) => ({
   publicSiteUrl: String(env.PUBLIC_SITE_URL || "https://www.rightmindcreative.co").replace(/\/$/, ""),
 });
 
+const employeeSessionStartsAt = (date, time) => {
+  const match = String(time || "").match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return "";
+  let hour = Number(match[1]);
+  if (match[3].toUpperCase() === "PM" && hour !== 12) hour += 12;
+  if (match[3].toUpperCase() === "AM" && hour === 12) hour = 0;
+  const probe = new Date(`${date}T12:00:00Z`);
+  const zoneName = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago", timeZoneName: "longOffset",
+  }).formatToParts(probe).find((part) => part.type === "timeZoneName")?.value || "GMT-06:00";
+  return `${date}T${String(hour).padStart(2, "0")}:${match[2]}:00${zoneName.replace("GMT", "")}`;
+};
+
 export const applicationSubmittedEvent = (application, env) => {
   const config = notificationConfig(env);
   return {
@@ -43,6 +56,23 @@ export const bookingConfirmedEvent = (application) => (
   artistContactEvent(application, "booking.confirmed", "booking-confirmed")
 );
 
+export const engineerAssignmentRequestedEvent = (assignment, application, env) => {
+  const config = notificationConfig(env);
+  const artist = application.artist_name || `${application.first_name || ""} ${application.last_name || ""}`.trim();
+  const responseUrl = `${config.publicSiteUrl}/team/?session=${encodeURIComponent(application.id)}&view=requests`;
+  return {
+    id: `engineer-assignment-requested:${assignment.id}:${assignment.updated_at}`,
+    type: "engineer.assignment_requested",
+    assignment: {
+      id: assignment.id,
+      engineerName: assignment.employee_name,
+      sessionDescription: `${artist} · ${application.service}`,
+      startsAt: employeeSessionStartsAt(application.preferred_date, application.preferred_time),
+      responseUrl,
+    },
+  };
+};
+
 const notifySimon = async (event, applicationId, env, fetchImpl) => {
   const config = notificationConfig(env);
   if (!config.url || !config.secret) return { status: "disabled" };
@@ -79,4 +109,15 @@ export async function notifySimonOfApproval(application, env, fetchImpl = fetch)
 
 export async function notifySimonOfBooking(application, env, fetchImpl = fetch) {
   return notifySimon(bookingConfirmedEvent(application), application.id, env, fetchImpl);
+}
+
+export async function notifySimonOfEngineerAssignment(
+  assignment, application, env, fetchImpl = fetch,
+) {
+  return notifySimon(
+    engineerAssignmentRequestedEvent(assignment, application, env),
+    application.id,
+    env,
+    fetchImpl,
+  );
 }

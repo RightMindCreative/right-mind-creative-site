@@ -5,6 +5,7 @@ import { createSessionCookie } from "../functions/_lib/admin-auth.js";
 import { createEmployeeSessionCookie, employeePasswordMatches, employeeProfile } from "../functions/_lib/employee-auth.js";
 import { calendarEligibleApplication } from "../functions/_lib/employee-scheduling.js";
 import { preferredStartsAt } from "../functions/api/simon/engineer-assignments.js";
+import { engineerAssignmentRequestedEvent } from "../functions/_lib/simon-notifications.js";
 
 test("employee dashboard is scoped to Jake Kaiser", () => {
   assert.deepEqual(employeeProfile, { slug: "jake-kaiser", name: "Jake Kaiser" });
@@ -38,4 +39,18 @@ test("only dated, calendar-based applications can be assigned", () => {
 test("Simon engineer assignments return parseable Central timestamps", () => {
   assert.equal(preferredStartsAt("2026-08-15", "2:00 PM"), "2026-08-15T14:00:00-05:00");
   assert.equal(preferredStartsAt("2026-12-15", "9:30 AM"), "2026-12-15T09:30:00-06:00");
+});
+
+test("owner assignment requests produce a unique Simon notification", () => {
+  const event = engineerAssignmentRequestedEvent(
+    { id: "assign-1", employee_name: "Jake Kaiser", updated_at: "2026-08-05T12:00:00Z" },
+    {
+      id: "app-1", artist_name: "Jordan", service: "Vocal Recording Session",
+      preferred_date: "2026-08-15", preferred_time: "2:00 PM",
+    },
+    { PUBLIC_SITE_URL: "https://www.rightmindcreative.co" },
+  );
+  assert.equal(event.type, "engineer.assignment_requested");
+  assert.match(event.assignment.responseUrl, /\/team\/\?session=app-1/);
+  assert.match(event.id, /2026-08-05T12:00:00Z/);
 });
