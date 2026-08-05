@@ -11,6 +11,7 @@ import {
 import {
   applicationApprovedEvent,
   bookingConfirmedEvent,
+  engineerAssignmentRespondedEvent,
 } from "../functions/_lib/simon-notifications.js";
 import {
   onRequestPost as approveApplication,
@@ -94,6 +95,20 @@ test("confirmed bookings emit an idempotent contact event", () => {
   assert.equal(event.type, "booking.confirmed");
   assert.equal(event.id, "booking-confirmed:booking-1");
   assert.equal(event.application.email, "avery@example.com");
+});
+
+test("engineer responses emit idempotent owner-notification events", () => {
+  const event = engineerAssignmentRespondedEvent({
+    id: "assignment-1", employee_name: "Jake Kaiser", state: "declined",
+    response_note: "Unavailable",
+  }, {
+    id: "app-1", artist_name: "Jordan", service: "Vocal Recording",
+    preferred_date: "2026-08-15", preferred_time: "2:00 PM",
+  }, { PUBLIC_SITE_URL: "https://www.rightmindcreative.co" });
+  assert.equal(event.id, "engineer-assignment-responded:assignment-1:declined");
+  assert.equal(event.type, "engineer.assignment_responded");
+  assert.equal(event.assignment.status, "declined");
+  assert.equal(event.assignment.reviewUrl, "https://www.rightmindcreative.co/admin?application=app-1");
 });
 
 test("Simon application approval is limited to explicit deposit waivers", async () => {
