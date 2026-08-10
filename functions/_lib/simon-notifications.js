@@ -32,6 +32,8 @@ export const applicationSubmittedEvent = (application, env) => {
       serviceOption: application.serviceOption || "",
       preferredDate: application.preferredDate || "",
       preferredTime: application.preferredTime || "",
+      phone: application.phone || "",
+      statusUrl: `${config.publicSiteUrl}/application-status?token=${encodeURIComponent(application.publicStatusToken || application.public_status_token || "")}`,
       reviewUrl: `${config.publicSiteUrl}/admin?application=${encodeURIComponent(application.id)}`,
     },
   };
@@ -95,6 +97,19 @@ export const engineerAssignmentRequestedEvent = (assignment, application, env) =
   };
 };
 
+export const applicationCancelledEvent = (application, env) => {
+  const config = notificationConfig(env);
+  return {
+    id: `application-cancelled:${application.id}`,
+    type: "application.cancelled",
+    application: {
+      id: application.id,
+      phone: application.phone || "",
+      statusUrl: `${config.publicSiteUrl}/application-status?token=${encodeURIComponent(application.public_status_token || application.publicStatusToken || "")}`,
+    },
+  };
+};
+
 const notifySimon = async (event, applicationId, env, fetchImpl) => {
   const config = notificationConfig(env);
   if (!config.url || !config.secret) return { status: "disabled" };
@@ -142,6 +157,10 @@ export async function notifySimonOfEngineerResponse(
     env,
     fetchImpl,
   );
+}
+
+export async function notifySimonOfCancellation(application, env, fetchImpl = fetch) {
+  return notifySimon(applicationCancelledEvent(application, env), application.id, env, fetchImpl);
 }
 
 export async function notifySimonOfEngineerAssignment(

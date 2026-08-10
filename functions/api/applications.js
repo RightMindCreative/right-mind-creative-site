@@ -161,6 +161,7 @@ export async function onRequestPost(context) {
   const createdAt = new Date().toISOString();
   application.id = id;
   application.createdAt = createdAt;
+  application.publicStatusToken = statusToken;
   const storedFiles = [];
 
   try {

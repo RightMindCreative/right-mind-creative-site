@@ -8,8 +8,10 @@ import { requireSimonService } from "../functions/_lib/simon-service-auth.js";
 import {
   SIMON_APPLICATION_STATUS, SIMON_PAYMENT_STATUS, simonPaymentIsConfigured,
 } from "../functions/api/simon/bookings.js";
+import { normalizedPhone } from "../functions/api/simon/artists.js";
 import {
   applicationApprovedEvent,
+  applicationCancelledEvent,
   bookingConfirmedEvent,
   engineerAssignmentRespondedEvent,
 } from "../functions/_lib/simon-notifications.js";
@@ -32,6 +34,10 @@ const context = (authorization = "", overrides = {}) => ({
 test("service aliases resolve to one website-owned ID", () => {
   assert.deepEqual(matchingServices("vocals").map((item) => item.id), ["vocal-recording"]);
   assert.equal(serviceById("music-production").name, "Music Production");
+});
+
+test("artist authorization normalizes phone numbers to ten digits", () => {
+  assert.equal(normalizedPhone("+1 (402) 555-0100"), "4025550100");
 });
 
 test("missing and incorrect service credentials are rejected", async () => {
@@ -138,4 +144,17 @@ test("Simon application approval is limited to explicit deposit waivers", async 
     }),
   });
   assert.equal(unsupported.status, 422);
+});
+
+test("cancelled approved applications emit a client notification with secure status link", () => {
+  const event = applicationCancelledEvent({
+    id: "app-2", phone: "+14025550102", public_status_token: "secure token",
+  }, { PUBLIC_SITE_URL: "https://www.rightmindcreative.co" });
+  assert.equal(event.type, "application.cancelled");
+  assert.equal(event.id, "application-cancelled:app-2");
+  assert.equal(event.application.phone, "+14025550102");
+  assert.equal(
+    event.application.statusUrl,
+    "https://www.rightmindcreative.co/application-status?token=secure%20token",
+  );
 });

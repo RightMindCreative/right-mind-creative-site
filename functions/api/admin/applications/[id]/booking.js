@@ -2,6 +2,7 @@ import { json, requireAdmin } from "../../../../_lib/admin-auth.js";
 import { buildApplicationEvent, calendarApplicationFromRow, CONFIRMED_BOOKING_COLOR_ID } from "../../../../_lib/application-notifications.js";
 import { deleteCalendarEvent, updateCalendarEvent } from "../../../../_lib/google-calendar.js";
 import { refundDeposit, stripeIsConfigured } from "../../../../_lib/stripe.js";
+import { notifySimonOfCancellation } from "../../../../_lib/simon-notifications.js";
 
 const manageableStatuses = new Set(["approved", "payment_pending", "confirmed"]);
 const durationHours = (option) => {
@@ -84,6 +85,12 @@ export async function onRequestPost(context) {
     await db.prepare(`UPDATE applications SET calendar_sync_status = 'failed', calendar_sync_error = ? WHERE id = ?`)
       .bind(String(error.message || error).slice(0, 500), application.id).run();
   }
+  context.waitUntil(notifySimonOfCancellation({
+    ...application,
+    status: "cancelled",
+    deposit_status: depositStatus,
+    updated_at: now,
+  }, context.env));
   return json({ application: { ...application, status: "cancelled", deposit_status: depositStatus, updated_at: now }, action });
 }
 

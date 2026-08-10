@@ -3,12 +3,35 @@ import { requireSimonService } from "../../_lib/simon-service-auth.js";
 
 const displayName = (row) => row.artist_name || `${row.first_name || ""} ${row.last_name || ""}`.trim();
 const normalizedEmail = (value) => String(value || "").trim().toLowerCase();
+export const normalizedPhone = (value) => String(value || "").replace(/\D/g, "").slice(-10);
 
 export async function onRequestGet(context) {
   const unauthorized = requireSimonService(context);
   if (unauthorized) return unauthorized;
   const name = (new URL(context.request.url).searchParams.get("name") || "").trim();
-  if (!name) return json({ error: "An artist name is required." }, 400);
+  const phone = normalizedPhone(new URL(context.request.url).searchParams.get("phone"));
+  if (!name && !phone) return json({ error: "An artist name or phone is required." }, 400);
+  if (phone) {
+    const [manualResult, applicationResult] = await Promise.all([
+      context.env.APPLICATIONS_DB.prepare(`
+        SELECT id, first_name, last_name, artist_name, email, phone
+        FROM manual_artists WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, '+', ''), '-', ''), '(', ''), ')', ''), ' ', '') LIKE ?
+        LIMIT 1
+      `).bind(`%${phone}`).all(),
+      context.env.APPLICATIONS_DB.prepare(`
+        SELECT id, first_name, last_name, artist_name, email, phone
+        FROM applications
+        WHERE status IN ('approved', 'payment_pending', 'confirmed')
+          AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, '+', ''), '-', ''), '(', ''), ')', ''), ' ', '') LIKE ?
+        LIMIT 1
+      `).bind(`%${phone}`).all(),
+    ]);
+    const rows = [...(manualResult.results || []), ...(applicationResult.results || [])];
+    return json({ artists: rows.slice(0, 1).map((artist) => ({
+      id: String(artist.id || ""), name: displayName(artist),
+      phone: String(artist.phone || ""), email: String(artist.email || ""),
+    })) });
+  }
   const pattern = `%${name.replace(/[\\%_]/g, "\\$&")}%`;
 
   const [manualResult, applicationResult] = await Promise.all([
