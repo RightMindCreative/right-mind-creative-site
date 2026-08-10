@@ -7,6 +7,7 @@ import {
 } from "../../../../_lib/decision-email.js";
 import { updateCalendarEvent } from "../../../../_lib/google-calendar.js";
 import { requireSimonService } from "../../../../_lib/simon-service-auth.js";
+import { notifySimonOfDecision } from "../../../../_lib/simon-notifications.js";
 
 const clean = (value, length = 200) => String(value || "").trim().slice(0, length);
 export const SIMON_WAIVE_DECISION = Object.freeze({
@@ -92,6 +93,9 @@ export async function onRequestPost(context) {
       UPDATE applications SET decision_email_status = 'sent', decision_email_message_id = ?,
         updated_at = ? WHERE id = ?
     `).bind(sent.id || null, new Date().toISOString(), application.id).run();
+    context.waitUntil(notifySimonOfDecision({
+      ...application, public_status_token: statusToken,
+    }, "approved", context.env));
   } catch (error) {
     notificationStatus = "failed";
     await context.env.APPLICATIONS_DB.prepare(`

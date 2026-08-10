@@ -2,7 +2,7 @@ import { json, requireAdmin } from "../../../../_lib/admin-auth.js";
 import { reconcileApplicationCalendar } from "../../../../_lib/application-notifications.js";
 import { decisionEmailIsConfigured, sendDecisionEmail } from "../../../../_lib/decision-email.js";
 import { depositForApplication } from "../../../../_lib/deposits.js";
-import { notifySimonOfApproval } from "../../../../_lib/simon-notifications.js";
+import { notifySimonOfApproval, notifySimonOfDecision } from "../../../../_lib/simon-notifications.js";
 
 const validDecisions = new Set(["approved", "declined"]);
 
@@ -24,6 +24,7 @@ export async function onRequestPost(context) {
   if (!application) return json({ error: "Application not found." }, 404);
   if (application.status === decision && application.decision_email_status === "sent") {
     if (decision === "approved") context.waitUntil(notifySimonOfApproval(application, context.env));
+    context.waitUntil(notifySimonOfDecision(application, decision, context.env));
     return json({ application, duplicate: true });
   }
   if (["approved", "declined"].includes(application.status) && application.status !== decision) {
@@ -90,6 +91,9 @@ export async function onRequestPost(context) {
       SET decision_email_status = 'sent', decision_email_message_id = ?, updated_at = ?
       WHERE id = ?
     `).bind(message.id || null, new Date().toISOString(), application.id).run();
+    context.waitUntil(notifySimonOfDecision({
+      ...application, public_status_token: statusToken,
+    }, decision, context.env));
     return json({
       application: {
         ...application, status: decision, decided_at: decidedAt,

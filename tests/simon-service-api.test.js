@@ -12,6 +12,7 @@ import { normalizedPhone } from "../functions/api/simon/artists.js";
 import {
   applicationApprovedEvent,
   applicationCancelledEvent,
+  applicationReviewedEvent,
   bookingConfirmedEvent,
   engineerAssignmentRespondedEvent,
 } from "../functions/_lib/simon-notifications.js";
@@ -157,4 +158,15 @@ test("cancelled approved applications emit a client notification with secure sta
     event.application.statusUrl,
     "https://www.rightmindcreative.co/application-status?token=secure%20token",
   );
+});
+
+test("application decision emails have matching client text events", () => {
+  const event = applicationReviewedEvent({
+    id: "app-3", phone: "+14025550103", public_status_token: "review token",
+  }, "approved", { PUBLIC_SITE_URL: "https://www.rightmindcreative.co" });
+  assert.equal(event.type, "application.reviewed");
+  assert.equal(event.id, "application-reviewed:app-3:approved");
+  assert.equal(event.application.status, "approved");
+  assert.equal(event.application.phone, "+14025550103");
+  assert.equal(event.application.statusUrl, "https://www.rightmindcreative.co/application-status?token=review%20token");
 });

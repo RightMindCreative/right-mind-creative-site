@@ -56,9 +56,26 @@ export const applicationApprovedEvent = (application) => (
   artistContactEvent(application, "application.approved", "application-approved")
 );
 
-export const bookingConfirmedEvent = (application) => (
-  artistContactEvent(application, "booking.confirmed", "booking-confirmed")
-);
+export const bookingConfirmedEvent = (application, env = {}) => {
+  const event = artistContactEvent(application, "booking.confirmed", "booking-confirmed");
+  const config = notificationConfig(env);
+  event.application.statusUrl = `${config.publicSiteUrl}/application-status?token=${encodeURIComponent(application.public_status_token || application.publicStatusToken || "")}`;
+  return event;
+};
+
+export const applicationReviewedEvent = (application, decision, env) => {
+  const config = notificationConfig(env);
+  return {
+    id: `application-reviewed:${application.id}:${decision}`,
+    type: "application.reviewed",
+    application: {
+      id: application.id,
+      phone: application.phone || "",
+      status: decision,
+      statusUrl: `${config.publicSiteUrl}/application-status?token=${encodeURIComponent(application.public_status_token || application.publicStatusToken || "")}`,
+    },
+  };
+};
 
 export const engineerAssignmentRespondedEvent = (assignment, application, env) => {
   const config = notificationConfig(env);
@@ -145,7 +162,11 @@ export async function notifySimonOfApproval(application, env, fetchImpl = fetch)
 }
 
 export async function notifySimonOfBooking(application, env, fetchImpl = fetch) {
-  return notifySimon(bookingConfirmedEvent(application), application.id, env, fetchImpl);
+  return notifySimon(bookingConfirmedEvent(application, env), application.id, env, fetchImpl);
+}
+
+export async function notifySimonOfDecision(application, decision, env, fetchImpl = fetch) {
+  return notifySimon(applicationReviewedEvent(application, decision, env), application.id, env, fetchImpl);
 }
 
 export async function notifySimonOfEngineerResponse(
