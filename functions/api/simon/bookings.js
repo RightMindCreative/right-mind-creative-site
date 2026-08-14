@@ -12,6 +12,7 @@ import { onRequestGet as scopedAvailability } from "./availability.js";
 import { notifySimonOfBooking } from "../../_lib/simon-notifications.js";
 
 const clean = (value, length) => String(value || "").trim().slice(0, length);
+const escapedLike = (value) => clean(value, 200).replace(/[\\%_]/g, "\\$&");
 export const SIMON_APPLICATION_STATUS = "approved";
 export const SIMON_PAYMENT_STATUS = "pending";
 export const simonPaymentIsConfigured = (env) => Boolean(
@@ -46,6 +47,48 @@ const responseFor = (application, client, service, startsAt, endsAt) => ({
     notificationStatus: application.notificationStatus,
   },
 });
+
+export const bookingSummary = (row) => ({
+  id: String(row.id || ""),
+  artistName: String(row.artist_name || `${row.first_name || ""} ${row.last_name || ""}`.trim()),
+  serviceName: String(row.service || ""),
+  serviceOption: String(row.service_option || ""),
+  preferredDate: String(row.preferred_date || ""),
+  preferredTime: String(row.preferred_time || ""),
+  status: String(row.status || ""),
+  depositStatus: String(row.deposit_status || ""),
+  calendarLinked: Boolean(row.google_event_id),
+});
+
+export async function onRequestGet(context) {
+  const unauthorized = requireSimonService(context);
+  if (unauthorized) return unauthorized;
+  const url = new URL(context.request.url);
+  const artist = clean(url.searchParams.get("artist"), 200);
+  const date = clean(url.searchParams.get("date"), 10);
+  if (!artist) return json({ error: "An artist name is required." }, 400);
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return json({ error: "Enter a valid existing booking date." }, 400);
+  }
+  const pattern = `%${escapedLike(artist)}%`;
+  const dateClause = date ? "AND preferred_date = ?" : "";
+  const statement = context.env.APPLICATIONS_DB.prepare(`
+    SELECT id, first_name, last_name, artist_name, service, service_option,
+      preferred_date, preferred_time, status, deposit_status, google_event_id
+    FROM applications
+    WHERE status IN ('approved', 'payment_pending', 'confirmed')
+      AND (artist_name LIKE ? ESCAPE '\\' COLLATE NOCASE
+        OR TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, ''))
+          LIKE ? ESCAPE '\\' COLLATE NOCASE)
+      ${dateClause}
+    ORDER BY COALESCE(updated_at, created_at) DESC
+    LIMIT 10
+  `);
+  const result = date
+    ? await statement.bind(pattern, pattern, date).all()
+    : await statement.bind(pattern, pattern).all();
+  return json({ bookings: (result.results || []).map(bookingSummary) });
+}
 
 const existingIdempotentResponse = async (db, key, requestHash) => {
   const existing = await db.prepare(`
@@ -229,6 +272,7 @@ export async function onRequestPost(context) {
 }
 
 export function onRequest(context) {
+  if (context.request.method === "GET") return onRequestGet(context);
   if (context.request.method === "POST") return onRequestPost(context);
   return json({ error: "Method not allowed." }, 405);
 }
