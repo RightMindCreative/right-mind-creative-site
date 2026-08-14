@@ -6,7 +6,7 @@ import { addApplicationToCalendar } from "../functions/_lib/application-notifica
 import { decisionCopyFor } from "../functions/_lib/decision-email.js";
 import { requireSimonService } from "../functions/_lib/simon-service-auth.js";
 import {
-  SIMON_APPLICATION_STATUS, SIMON_PAYMENT_STATUS, simonPaymentIsConfigured,
+  bookingSummary, SIMON_APPLICATION_STATUS, SIMON_PAYMENT_STATUS, simonPaymentIsConfigured,
 } from "../functions/api/simon/bookings.js";
 import { normalizedPhone } from "../functions/api/simon/artists.js";
 import {
@@ -60,6 +60,20 @@ test("unconfigured service boundary fails closed", () => {
 test("owner-confirmed Simon requests create approved applications", () => {
   assert.equal(SIMON_APPLICATION_STATUS, "approved");
   assert.equal(SIMON_PAYMENT_STATUS, "pending");
+});
+
+test("Simon booking lookup exposes only the scoped reschedule summary", () => {
+  assert.deepEqual(bookingSummary({
+    id: "booking-1", artist_name: "Doolie", service: "Vocal Recording",
+    service_option: "2 hours", preferred_date: "2026-08-12",
+    preferred_time: "4:00 PM", status: "confirmed", deposit_status: "paid",
+    google_event_id: "private-calendar-id",
+  }), {
+    id: "booking-1", artistName: "Doolie", serviceName: "Vocal Recording",
+    serviceOption: "2 hours", preferredDate: "2026-08-12",
+    preferredTime: "4:00 PM", status: "confirmed", depositStatus: "paid",
+    calendarLinked: true,
+  });
 });
 
 test("Simon deposit handoff requires email, Stripe, and verified webhooks", () => {
