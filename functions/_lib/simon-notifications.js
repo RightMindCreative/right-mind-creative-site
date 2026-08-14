@@ -127,6 +127,22 @@ export const applicationCancelledEvent = (application, env) => {
   };
 };
 
+export const bookingRescheduledEvent = (application, env) => {
+  const config = notificationConfig(env);
+  const changedAt = application.updated_at || application.updatedAt || new Date().toISOString();
+  return {
+    id: `booking-rescheduled:${application.id}:${changedAt}`,
+    type: "booking.rescheduled",
+    booking: {
+      id: application.id,
+      phone: application.phone || "",
+      preferredDate: application.preferred_date || application.preferredDate || "",
+      preferredTime: application.preferred_time || application.preferredTime || "",
+      statusUrl: `${config.publicSiteUrl}/application-status?token=${encodeURIComponent(application.public_status_token || application.publicStatusToken || "")}`,
+    },
+  };
+};
+
 const notifySimon = async (event, applicationId, env, fetchImpl) => {
   const config = notificationConfig(env);
   if (!config.url || !config.secret) return { status: "disabled" };
@@ -182,6 +198,10 @@ export async function notifySimonOfEngineerResponse(
 
 export async function notifySimonOfCancellation(application, env, fetchImpl = fetch) {
   return notifySimon(applicationCancelledEvent(application, env), application.id, env, fetchImpl);
+}
+
+export async function notifySimonOfReschedule(application, env, fetchImpl = fetch) {
+  return notifySimon(bookingRescheduledEvent(application, env), application.id, env, fetchImpl);
 }
 
 export async function notifySimonOfEngineerAssignment(

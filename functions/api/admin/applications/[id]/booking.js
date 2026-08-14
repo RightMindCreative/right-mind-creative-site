@@ -2,7 +2,7 @@ import { json, requireAdmin } from "../../../../_lib/admin-auth.js";
 import { buildApplicationEvent, calendarApplicationFromRow, CONFIRMED_BOOKING_COLOR_ID } from "../../../../_lib/application-notifications.js";
 import { deleteCalendarEvent, updateCalendarEvent } from "../../../../_lib/google-calendar.js";
 import { refundDeposit, stripeIsConfigured } from "../../../../_lib/stripe.js";
-import { notifySimonOfCancellation } from "../../../../_lib/simon-notifications.js";
+import { notifySimonOfCancellation, notifySimonOfReschedule } from "../../../../_lib/simon-notifications.js";
 
 const manageableStatuses = new Set(["approved", "payment_pending", "confirmed"]);
 const durationHours = (option) => {
@@ -61,6 +61,9 @@ export async function onRequestPost(context) {
     const now = new Date().toISOString();
     await db.prepare(`UPDATE applications SET preferred_date = ?, preferred_time = ?, calendar_sync_status = 'sent', calendar_sync_error = NULL, updated_at = ? WHERE id = ?`)
       .bind(date, time, now, application.id).run();
+    context.waitUntil(notifySimonOfReschedule({
+      ...updated, updated_at: now,
+    }, context.env));
     return json({ application: { ...updated, updated_at: now }, action });
   }
 

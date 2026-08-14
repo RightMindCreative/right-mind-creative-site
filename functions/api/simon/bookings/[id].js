@@ -7,6 +7,7 @@ import { requireSimonService } from "../../../_lib/simon-service-auth.js";
 import { matchingServices, serviceById } from "../../../_lib/service-catalog.js";
 import { onRequestGet as scopedAvailability } from "../availability.js";
 import { bookingSummary } from "../bookings.js";
+import { notifySimonOfReschedule } from "../../../_lib/simon-notifications.js";
 
 const clean = (value, length = 200) => String(value || "").trim().slice(0, length);
 const hashRequest = async (payload) => {
@@ -133,6 +134,9 @@ export async function onRequestPatch(context) {
   } catch (error) {
     return json({ error: "The calendar changed, but the booking record needs reconciliation." }, 500);
   }
+  context.waitUntil(notifySimonOfReschedule({
+    ...updated, updated_at: now,
+  }, context.env));
   return json(response);
 }
 

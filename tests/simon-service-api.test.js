@@ -13,6 +13,7 @@ import {
   applicationApprovedEvent,
   applicationCancelledEvent,
   applicationReviewedEvent,
+  bookingRescheduledEvent,
   bookingConfirmedEvent,
   engineerAssignmentRespondedEvent,
 } from "../functions/_lib/simon-notifications.js";
@@ -183,4 +184,17 @@ test("application decision emails have matching client text events", () => {
   assert.equal(event.application.status, "approved");
   assert.equal(event.application.phone, "+14025550103");
   assert.equal(event.application.statusUrl, "https://www.rightmindcreative.co/application-status?token=review%20token");
+});
+
+test("manual and Simon reschedules emit unique client notification events", () => {
+  const event = bookingRescheduledEvent({
+    id: "booking-4", phone: "+14025550104", public_status_token: "status token",
+    preferred_date: "2026-08-20", preferred_time: "4:00 PM",
+    updated_at: "2026-08-14T18:00:00.000Z",
+  }, { PUBLIC_SITE_URL: "https://www.rightmindcreative.co" });
+  assert.equal(event.type, "booking.rescheduled");
+  assert.equal(event.id, "booking-rescheduled:booking-4:2026-08-14T18:00:00.000Z");
+  assert.equal(event.booking.phone, "+14025550104");
+  assert.equal(event.booking.preferredDate, "2026-08-20");
+  assert.equal(event.booking.statusUrl, "https://www.rightmindcreative.co/application-status?token=status%20token");
 });
