@@ -21,6 +21,7 @@ import {
   onRequestPost as approveApplication,
   SIMON_WAIVE_DECISION,
 } from "../functions/api/simon/applications/[id]/decision.js";
+import { onRequestPost as splitBooking } from "../functions/api/simon/bookings/[id]/split.js";
 
 const context = (authorization = "", overrides = {}) => ({
   request: new Request("https://preview.example.pages.dev/api/simon/services", {
@@ -160,6 +161,25 @@ test("Simon application approval is limited to explicit deposit waivers", async 
     }),
   });
   assert.equal(unsupported.status, 422);
+});
+
+test("Simon booking split fails closed before reading private booking data", async () => {
+  const unauthorized = await splitBooking({
+    ...context(""), params: { id: "booking-1" },
+    request: new Request(
+      "https://www.rightmindcreative.co/api/simon/bookings/booking-1/split",
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    ),
+  });
+  assert.equal(unauthorized.status, 401);
+  const missingKey = await splitBooking({
+    ...context("Bearer test-service-token"), params: { id: "booking-1" },
+    request: new Request(
+      "https://www.rightmindcreative.co/api/simon/bookings/booking-1/split",
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    ),
+  });
+  assert.equal(missingKey.status, 400);
 });
 
 test("cancelled approved applications emit a client notification with secure status link", () => {
