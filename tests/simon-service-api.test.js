@@ -22,6 +22,7 @@ import {
   SIMON_WAIVE_DECISION,
 } from "../functions/api/simon/applications/[id]/decision.js";
 import { onRequestPost as splitBooking } from "../functions/api/simon/bookings/[id]/split.js";
+import { onRequestPost as rollbackWaiver } from "../functions/api/simon/applications/[id]/rollback-waiver.js";
 
 const context = (authorization = "", overrides = {}) => ({
   request: new Request("https://preview.example.pages.dev/api/simon/services", {
@@ -161,6 +162,27 @@ test("Simon application approval is limited to explicit deposit waivers", async 
     }),
   });
   assert.equal(unsupported.status, 422);
+});
+
+test("Simon waiver rollback requires authentication and an idempotency key", async () => {
+  const unauthorized = await rollbackWaiver({
+    ...context(""), params: { id: "app-1" },
+    request: new Request("https://www.rightmindcreative.co/api/simon/applications/app-1/rollback-waiver", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    }),
+  });
+  assert.equal(unauthorized.status, 401);
+  const missingKey = await rollbackWaiver({
+    ...context("Bearer test-service-token"), params: { id: "app-1" },
+    request: new Request("https://www.rightmindcreative.co/api/simon/applications/app-1/rollback-waiver", {
+      method: "POST", headers: {
+        authorization: "Bearer test-service-token", "content-type": "application/json",
+      }, body: JSON.stringify({
+        action: "revert_erroneous_waiver", restoreStatus: "new", expectedArtistName: "ybexe",
+      }),
+    }),
+  });
+  assert.equal(missingKey.status, 400);
 });
 
 test("Simon booking split fails closed before reading private booking data", async () => {
