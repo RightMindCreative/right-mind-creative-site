@@ -10,6 +10,7 @@ import { requireSimonService } from "../../_lib/simon-service-auth.js";
 import { serviceById } from "../../_lib/service-catalog.js";
 import { onRequestGet as scopedAvailability } from "./availability.js";
 import { notifySimonOfBooking } from "../../_lib/simon-notifications.js";
+import { ensureEmployeeScheduling } from "../../_lib/employee-scheduling.js";
 
 const clean = (value, length) => String(value || "").trim().slice(0, length);
 const escapedLike = (value) => clean(value, 200).replace(/[\\%_]/g, "\\$&");
@@ -58,11 +59,15 @@ export const bookingSummary = (row) => ({
   status: String(row.status || ""),
   depositStatus: String(row.deposit_status || ""),
   calendarLinked: Boolean(row.google_event_id),
+  assignmentId: String(row.assignment_id || ""),
+  assignmentState: String(row.assignment_state || ""),
+  engineerName: String(row.engineer_name || ""),
 });
 
 export async function onRequestGet(context) {
   const unauthorized = requireSimonService(context);
   if (unauthorized) return unauthorized;
+  await ensureEmployeeScheduling(context.env.APPLICATIONS_DB);
   const url = new URL(context.request.url);
   const artist = clean(url.searchParams.get("artist"), 200);
   const date = clean(url.searchParams.get("date"), 10);
@@ -73,15 +78,17 @@ export async function onRequestGet(context) {
   const pattern = `%${escapedLike(artist)}%`;
   const dateClause = date ? "AND preferred_date = ?" : "";
   const statement = context.env.APPLICATIONS_DB.prepare(`
-    SELECT id, first_name, last_name, artist_name, service, service_option,
-      preferred_date, preferred_time, status, deposit_status, google_event_id
-    FROM applications
-    WHERE status IN ('approved', 'payment_pending', 'confirmed')
+    SELECT a.id, a.first_name, a.last_name, a.artist_name, a.service, a.service_option,
+      a.preferred_date, a.preferred_time, a.status, a.deposit_status, a.google_event_id,
+      sa.id AS assignment_id, sa.state AS assignment_state, sa.employee_name AS engineer_name
+    FROM applications a
+    LEFT JOIN session_assignments sa ON sa.application_id = a.id
+    WHERE a.status IN ('approved', 'payment_pending', 'confirmed')
       AND (artist_name LIKE ? ESCAPE '\\' COLLATE NOCASE
         OR TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, ''))
           LIKE ? ESCAPE '\\' COLLATE NOCASE)
       ${dateClause}
-    ORDER BY COALESCE(updated_at, created_at) DESC
+    ORDER BY COALESCE(a.updated_at, a.created_at) DESC
     LIMIT 10
   `);
   const result = date

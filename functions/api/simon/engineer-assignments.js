@@ -41,6 +41,68 @@ export async function onRequestPost(context) {
   if (!idempotencyKey) return json({ error: "An Idempotency-Key header is required." }, 400);
   const payload = await context.request.json().catch(() => ({}));
   const responseAction = clean(payload.action, 20).toLowerCase();
+  if (responseAction === "assign") {
+    const db = context.env.APPLICATIONS_DB;
+    await ensureEmployeeScheduling(db);
+    const bookingId = clean(payload.bookingId, 200);
+    const engineerName = clean(payload.engineerName, 200);
+    if (!bookingId || engineerName.toLowerCase() !== employeeProfile.name.toLowerCase()) {
+      return json({ error: "An exact booking and the configured engineer are required." }, 422);
+    }
+    const previousAudit = await db.prepare(`
+      SELECT application_id FROM simon_api_audit
+      WHERE action = 'engineer_assignment.assign' AND idempotency_key = ?
+      ORDER BY created_at DESC LIMIT 1
+    `).bind(idempotencyKey).first();
+    if (previousAudit?.application_id && previousAudit.application_id !== bookingId) {
+      return json({ error: "That idempotency key was already used for another booking." }, 409);
+    }
+    const application = await db.prepare("SELECT * FROM applications WHERE id = ?")
+      .bind(bookingId).first();
+    if (!calendarEligibleApplication(application)) {
+      return json({ error: "This exact session cannot be assigned to an engineer." }, 409);
+    }
+    const existing = await db.prepare(
+      "SELECT * FROM session_assignments WHERE application_id = ?",
+    ).bind(bookingId).first();
+    const now = new Date().toISOString();
+    if (!previousAudit) {
+      await db.batch([
+        db.prepare(`
+          INSERT INTO session_assignments
+            (id, application_id, employee_slug, employee_name, state, requested_by,
+             request_note, response_note, requested_at, responded_at, updated_at)
+          VALUES (?, ?, ?, ?, 'accepted', 'owner', ?, ?, ?, ?, ?)
+          ON CONFLICT(application_id) DO UPDATE SET
+            employee_slug = excluded.employee_slug, employee_name = excluded.employee_name,
+            state = 'accepted', requested_by = 'owner', request_note = excluded.request_note,
+            response_note = excluded.response_note, responded_at = excluded.responded_at,
+            updated_at = excluded.updated_at
+        `).bind(
+          existing?.id || crypto.randomUUID(), bookingId, employeeProfile.slug,
+          employeeProfile.name, "Assigned directly by the owner through Simon.",
+          `Previous assignment state: ${existing?.state || "unassigned"}.`,
+          existing?.requested_at || now, now, now,
+        ),
+        db.prepare(`INSERT INTO simon_api_audit
+          (id, created_at, action, request_id, idempotency_key, application_id, outcome)
+          VALUES (?, ?, 'engineer_assignment.assign', ?, ?, ?, 'accepted')`)
+          .bind(crypto.randomUUID(), now, context.request.headers.get("x-request-id") || "",
+            idempotencyKey, bookingId),
+      ]);
+    }
+    const assignment = await db.prepare(
+      "SELECT * FROM session_assignments WHERE application_id = ?",
+    ).bind(bookingId).first();
+    if (!assignment || assignment.state !== "accepted") {
+      return json({ error: "The website did not verify the engineer assignment." }, 500);
+    }
+    return json({
+      assigned: true,
+      previousState: existing?.state || "unassigned",
+      assignment: assignmentResponse(context, assignment, application),
+    });
+  }
   if (["accept", "decline"].includes(responseAction)) {
     const db = context.env.APPLICATIONS_DB;
     await ensureEmployeeScheduling(db);
