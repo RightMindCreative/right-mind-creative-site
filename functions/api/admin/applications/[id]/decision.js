@@ -93,6 +93,7 @@ export async function onRequestPost(context) {
     `).bind(message.id || null, new Date().toISOString(), application.id).run();
     context.waitUntil(notifySimonOfDecision({
       ...application, public_status_token: statusToken,
+      deposit_status: decision === "approved" ? "pending" : "not_required",
     }, decision, context.env));
     return json({
       application: {

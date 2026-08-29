@@ -72,6 +72,7 @@ export const applicationReviewedEvent = (application, decision, env) => {
       id: application.id,
       phone: application.phone || "",
       status: decision,
+      depositStatus: application.deposit_status || application.depositStatus || "",
       statusUrl: `${config.publicSiteUrl}/application-status?token=${encodeURIComponent(application.public_status_token || application.publicStatusToken || "")}`,
     },
   };

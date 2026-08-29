@@ -94,7 +94,7 @@ export async function onRequestPost(context) {
         updated_at = ? WHERE id = ?
     `).bind(sent.id || null, new Date().toISOString(), application.id).run();
     context.waitUntil(notifySimonOfDecision({
-      ...application, public_status_token: statusToken,
+      ...application, public_status_token: statusToken, deposit_status: "waived",
     }, "approved", context.env));
   } catch (error) {
     notificationStatus = "failed";
