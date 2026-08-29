@@ -1,0 +1,490 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Right Mind Creative Booking API",
+    "version": "1.0.0",
+    "description": "Authoritative contract for the client booking flow and the server-side studio operations API. Operations marked x-access-tier=client are safe for the iOS app. Operations marked companion-server must only be called by a trusted backend; never ship its bearer token in an app binary."
+  },
+  "servers": [
+    { "url": "https://www.rightmindcreative.co", "description": "Production" }
+  ],
+  "tags": [
+    { "name": "Client configuration" },
+    { "name": "Client booking" },
+    { "name": "Client status and payment" },
+    { "name": "Studio companion service" }
+  ],
+  "paths": {
+    "/api/mobile/config": {
+      "get": {
+        "tags": ["Client configuration"],
+        "operationId": "getMobileBookingConfig",
+        "x-access-tier": "client",
+        "summary": "Load services and current booking rules",
+        "responses": {
+          "200": {
+            "description": "Current client-safe configuration",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MobileBookingConfig" } } }
+          }
+        }
+      }
+    },
+    "/api/availability": {
+      "get": {
+        "tags": ["Client booking"],
+        "operationId": "getAvailability",
+        "x-access-tier": "client",
+        "summary": "Get available start hours for a date and duration",
+        "parameters": [
+          { "name": "date", "in": "query", "required": true, "schema": { "type": "string", "format": "date" } },
+          { "name": "duration", "in": "query", "required": true, "description": "Duration in hours", "schema": { "type": "integer", "enum": [2, 3, 4, 6, 8, 12] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Start hours are integers in America/Chicago local time",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AvailabilityResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/applications": {
+      "post": {
+        "tags": ["Client booking"],
+        "operationId": "submitApplication",
+        "x-access-tier": "client",
+        "summary": "Submit a booking application and optional files",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": { "$ref": "#/components/schemas/ApplicationSubmission" },
+              "encoding": { "projectFiles": { "contentType": "audio/*, image/*, application/pdf, application/zip" } }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Application received",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApplicationReceipt" } } }
+          },
+          "413": { "$ref": "#/components/responses/UploadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedFile" },
+          "422": { "$ref": "#/components/responses/ValidationError" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/application-status": {
+      "post": {
+        "tags": ["Client status and payment"],
+        "operationId": "verifyApplicationStatus",
+        "x-access-tier": "client",
+        "summary": "Verify a private status token with the applicant phone suffix",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StatusVerification" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Verified application",
+            "content": { "application/json": { "schema": { "type": "object", "required": ["application"], "properties": { "application": { "$ref": "#/components/schemas/ApplicationStatus" } } } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/application-status/checkout": {
+      "post": {
+        "tags": ["Client status and payment"],
+        "operationId": "createDepositCheckout",
+        "x-access-tier": "client",
+        "summary": "Create Stripe Checkout for an approved pending deposit",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StatusVerification" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Open checkoutUrl with ASWebAuthenticationSession or the system browser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["checkoutUrl"],
+                  "properties": {
+                    "checkoutUrl": { "type": "string", "format": "uri" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/simon/services": {
+      "get": {
+        "tags": ["Studio companion service"],
+        "operationId": "findService",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Resolve a service name or alias",
+        "parameters": [{ "name": "query", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Matching services" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/simon/availability": {
+      "get": {
+        "tags": ["Studio companion service"],
+        "operationId": "checkExactAvailability",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Check an exact service slot, including guarded custom durations",
+        "parameters": [
+          { "name": "serviceId", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "startsAfter", "in": "query", "required": true, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "endsBefore", "in": "query", "required": false, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "durationMinutes", "in": "query", "required": true, "schema": { "type": "integer" } },
+          { "name": "allowCustomDuration", "in": "query", "required": false, "schema": { "type": "boolean", "default": false } }
+        ],
+        "responses": { "200": { "description": "Exact slot result" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/simon/applications": {
+      "get": {
+        "tags": ["Studio companion service"],
+        "operationId": "listActiveApplications",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "List the ten newest active applications",
+        "responses": { "200": { "description": "Active applications" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/simon/applications/{id}/decision": {
+      "post": {
+        "tags": ["Studio companion service"],
+        "operationId": "approveApplicationWithWaiver",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Owner-approved application with explicit deposit waiver",
+        "parameters": [
+          { "$ref": "#/components/parameters/ApplicationId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" },
+          { "$ref": "#/components/parameters/RequestId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["decision", "waiveDeposit"],
+                "properties": {
+                  "decision": { "const": "approved" },
+                  "waiveDeposit": { "const": true }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Confirmed with waived deposit" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationError" } }
+      }
+    },
+    "/api/simon/applications/{id}/rollback-waiver": {
+      "post": {
+        "tags": ["Studio companion service"],
+        "operationId": "rollbackErroneousWaiver",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Guarded rollback of an unpaid erroneous service-API waiver",
+        "parameters": [
+          { "$ref": "#/components/parameters/ApplicationId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" },
+          { "$ref": "#/components/parameters/RequestId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "required": ["action", "restoreStatus", "expectedArtistName"],
+            "properties": {
+              "action": { "const": "revert_erroneous_waiver" },
+              "restoreStatus": { "const": "new" },
+              "expectedArtistName": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": { "200": { "description": "Application restored to new" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationError" } }
+      }
+    },
+    "/api/simon/artists": {
+      "get": {
+        "tags": ["Studio companion service"],
+        "operationId": "findArtist",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Find an approved artist by name or phone",
+        "parameters": [
+          { "name": "name", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "phone", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Matching artists" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/simon/bookings": {
+      "get": {
+        "tags": ["Studio companion service"],
+        "operationId": "findBooking",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Find active bookings by artist and optional date",
+        "parameters": [
+          { "name": "artist", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "date", "in": "query", "required": false, "schema": { "type": "string", "format": "date" } }
+        ],
+        "responses": { "200": { "description": "Matching bookings" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      },
+      "post": {
+        "tags": ["Studio companion service"],
+        "operationId": "createOwnerApprovedBooking",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Create an approved booking, calendar event, deposit request, and email",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }, { "$ref": "#/components/parameters/RequestId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PrivilegedBookingCreate" } } } },
+        "responses": { "201": { "description": "Booking created" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationError" } }
+      }
+    },
+    "/api/simon/bookings/{id}": {
+      "patch": {
+        "tags": ["Studio companion service"],
+        "operationId": "rescheduleBooking",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Reschedule the D1 booking and linked Google Calendar event",
+        "parameters": [{ "$ref": "#/components/parameters/ApplicationId" }, { "$ref": "#/components/parameters/IdempotencyKey" }, { "$ref": "#/components/parameters/RequestId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BookingReschedule" } } } },
+        "responses": { "200": { "description": "Booking rescheduled" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationError" } }
+      }
+    },
+    "/api/simon/bookings/{id}/split": {
+      "post": {
+        "tags": ["Studio companion service"],
+        "operationId": "splitBooking",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Preview or atomically split one confirmed booking into two calendar segments",
+        "parameters": [{ "$ref": "#/components/parameters/ApplicationId" }, { "$ref": "#/components/parameters/IdempotencyKey" }, { "$ref": "#/components/parameters/RequestId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BookingSplit" } } } },
+        "responses": { "200": { "description": "Split preview or completed split" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationError" } }
+      }
+    },
+    "/api/simon/engineer-assignments": {
+      "get": {
+        "tags": ["Studio companion service"],
+        "operationId": "getEngineerAssignments",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "List Jake's accepted assignments for an approved date",
+        "parameters": [
+          { "name": "date", "in": "query", "required": true, "schema": { "type": "string", "format": "date" } },
+          { "name": "status", "in": "query", "required": true, "schema": { "const": "approved" } }
+        ],
+        "responses": { "200": { "description": "Accepted assignments" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      },
+      "post": {
+        "tags": ["Studio companion service"],
+        "operationId": "changeEngineerAssignment",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Assign Jake directly, request him for a session, or record a response",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }, { "$ref": "#/components/parameters/RequestId" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EngineerAssignmentChange" } } } },
+        "responses": { "200": { "description": "Assignment updated" }, "201": { "description": "Assignment requested" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ServiceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque server secret",
+        "description": "Cloudflare SIMON_SERVICE_TOKEN. Server-side only; never store in an iOS application, Info.plist, Keychain bootstrap, remote config, or source repository."
+      }
+    },
+    "parameters": {
+      "ApplicationId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "format": "uuid" } },
+      "RequestId": { "name": "X-Request-Id", "in": "header", "required": false, "schema": { "type": "string", "format": "uuid" } }
+    },
+    "schemas": {
+      "Service": {
+        "type": "object",
+        "required": ["id", "name", "category", "durationOptions"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "category": { "type": "string", "enum": ["recording", "production", "mixing", "packages"] },
+          "durationOptions": { "type": "array", "description": "Minutes", "items": { "type": "integer" } }
+        }
+      },
+      "MobileBookingConfig": {
+        "type": "object",
+        "required": ["apiVersion", "timeZone", "minimumLeadTimeHours", "weeklyHours", "uploads", "services", "endpoints"],
+        "properties": {
+          "apiVersion": { "type": "string" },
+          "timeZone": { "const": "America/Chicago" },
+          "minimumLeadTimeHours": { "type": "integer" },
+          "weeklyHours": { "type": "object", "additionalProperties": true },
+          "uploads": { "type": "object", "additionalProperties": true },
+          "applicationStatuses": { "type": "array", "items": { "type": "string" } },
+          "depositStatuses": { "type": "array", "items": { "type": "string" } },
+          "services": { "type": "array", "items": { "$ref": "#/components/schemas/Service" } },
+          "endpoints": { "type": "object", "additionalProperties": { "type": "string" } }
+        }
+      },
+      "AvailabilityResponse": {
+        "type": "object",
+        "required": ["date", "slots"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "slots": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 23 } },
+          "reason": { "type": "string", "enum": ["closed", "outside-hours", "lead-time", ""] },
+          "calendarConnected": { "type": "boolean" }
+        }
+      },
+      "ApplicationSubmission": {
+        "type": "object",
+        "required": ["category", "service", "firstName", "lastName", "email", "phone"],
+        "properties": {
+          "category": { "type": "string", "enum": ["recording", "production", "mixing", "packages"] },
+          "service": { "type": "string" },
+          "serviceOption": { "type": "string" },
+          "date": { "type": "string", "format": "date", "description": "Required for calendar-based services" },
+          "time": { "type": "string", "examples": ["2:00 PM"], "description": "Required for calendar-based services" },
+          "firstName": { "type": "string", "maxLength": 100 },
+          "lastName": { "type": "string", "maxLength": 100 },
+          "artistName": { "type": "string", "maxLength": 160 },
+          "email": { "type": "string", "format": "email" },
+          "phone": { "type": "string" },
+          "stemCount": { "type": "integer", "minimum": 1, "description": "Required for mixing" },
+          "socialLinks": { "type": "string", "maxLength": 2000 },
+          "notes": { "type": "string", "maxLength": 5000 },
+          "projectFiles": { "type": "array", "items": { "type": "string", "format": "binary" } }
+        }
+      },
+      "ApplicationReceipt": {
+        "type": "object",
+        "required": ["id", "status", "statusUrl", "integrations"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": { "const": "received" },
+          "statusUrl": { "type": "string" },
+          "integrations": { "type": "object", "properties": { "calendar": { "type": "object", "additionalProperties": true } } }
+        }
+      },
+      "StatusVerification": {
+        "type": "object",
+        "required": ["token", "lastFour"],
+        "properties": {
+          "token": { "type": "string", "format": "uuid" },
+          "lastFour": { "type": "string", "pattern": "^[0-9]{4}$" }
+        }
+      },
+      "ApplicationStatus": {
+        "type": "object",
+        "required": ["id", "status", "service"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": ["string", "null"], "format": "date-time" },
+          "status": { "type": "string" },
+          "category": { "type": "string" },
+          "service": { "type": "string" },
+          "service_option": { "type": "string" },
+          "preferred_date": { "type": "string" },
+          "preferred_time": { "type": "string" },
+          "first_name": { "type": "string" },
+          "last_name": { "type": "string" },
+          "artist_name": { "type": "string" },
+          "deposit_amount_cents": { "type": ["integer", "null"] },
+          "deposit_currency": { "type": ["string", "null"] },
+          "deposit_status": { "type": ["string", "null"] },
+          "deposit_paid_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "ClientIdentity": {
+        "type": "object",
+        "required": ["name", "phone", "email"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "phone": { "type": "string" },
+          "email": { "type": "string", "format": "email" }
+        }
+      },
+      "PrivilegedBookingCreate": {
+        "type": "object",
+        "required": ["serviceId", "durationMinutes", "startsAt", "client"],
+        "properties": {
+          "serviceId": { "type": "string" },
+          "durationMinutes": { "type": "integer", "minimum": 30, "maximum": 720, "multipleOf": 30 },
+          "startsAt": { "type": "string", "format": "date-time" },
+          "allowCustomDuration": { "type": "boolean", "default": false },
+          "client": { "$ref": "#/components/schemas/ClientIdentity" }
+        }
+      },
+      "BookingReschedule": {
+        "type": "object",
+        "required": ["startsAt", "durationMinutes"],
+        "properties": {
+          "serviceId": { "type": "string" },
+          "startsAt": { "type": "string", "format": "date-time" },
+          "durationMinutes": { "type": "integer" }
+        }
+      },
+      "BookingSplit": {
+        "type": "object",
+        "required": ["firstStartsAt", "secondStartsAt", "firstDurationMinutes", "secondDurationMinutes"],
+        "properties": {
+          "firstStartsAt": { "type": "string", "format": "date-time", "description": "Must equal the original booking start" },
+          "secondStartsAt": { "type": "string", "format": "date-time" },
+          "firstDurationMinutes": { "type": "integer", "minimum": 30, "multipleOf": 30 },
+          "secondDurationMinutes": { "type": "integer", "minimum": 30, "multipleOf": 30 },
+          "preview": { "type": "boolean", "default": false }
+        }
+      },
+      "EngineerAssignmentChange": {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["assign", "accept", "decline"] },
+          "bookingId": { "type": "string", "format": "uuid" },
+          "engineerName": { "type": "string", "examples": ["Jake Kaiser"] },
+          "startsAt": { "type": "string", "format": "date-time" },
+          "sessionDescription": { "type": "string" },
+          "note": { "type": "string" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" }, "errors": { "type": "array", "items": { "type": "string" } } }
+      }
+    },
+    "responses": {
+      "BadRequest": { "description": "Malformed request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unauthorized": { "description": "Service authentication required", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "Not found or verification failed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Conflict": { "description": "State or availability conflict", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "ValidationError": { "description": "Validation failed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "UploadTooLarge": { "description": "A file exceeds 25 MB or all files exceed 50 MB", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "UnsupportedFile": { "description": "Unsupported uploaded file type", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unavailable": { "description": "Required integration is unavailable", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    }
+  }
+}

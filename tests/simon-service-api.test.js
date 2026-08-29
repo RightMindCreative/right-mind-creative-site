@@ -75,6 +75,7 @@ test("Simon booking lookup exposes only the scoped reschedule summary", () => {
     id: "booking-1", artistName: "Doolie", serviceName: "Vocal Recording",
     serviceOption: "2 hours", preferredDate: "2026-08-12",
     preferredTime: "4:00 PM", status: "confirmed", depositStatus: "paid",
+    assignmentId: "", assignmentState: "", engineerName: "",
     calendarLinked: true,
   });
 });
@@ -198,7 +199,14 @@ test("Simon booking split fails closed before reading private booking data", asy
     ...context("Bearer test-service-token"), params: { id: "booking-1" },
     request: new Request(
       "https://www.rightmindcreative.co/api/simon/bookings/booking-1/split",
-      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-service-token",
+          "content-type": "application/json",
+        },
+        body: "{}",
+      },
     ),
   });
   assert.equal(missingKey.status, 400);
