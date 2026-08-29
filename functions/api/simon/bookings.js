@@ -125,6 +125,9 @@ export async function onRequestPost(context) {
 
   const service = serviceById(clean(payload.serviceId, 100));
   const durationMinutes = Number(payload.durationMinutes);
+  const allowCustomDuration = payload.allowCustomDuration === true;
+  const customDurationIsValid = Number.isInteger(durationMinutes)
+    && durationMinutes >= 30 && durationMinutes <= 720 && durationMinutes % 30 === 0;
   const startsAt = new Date(payload.startsAt || "");
   const client = {
     id: clean(payload.client?.id, 200),
@@ -132,7 +135,8 @@ export async function onRequestPost(context) {
     phone: clean(payload.client?.phone, 60),
     email: clean(payload.client?.email, 254).toLowerCase(),
   };
-  if (!service || !service.durationOptions.includes(durationMinutes)
+  if (!service || !(service.durationOptions.includes(durationMinutes)
+      || (allowCustomDuration && customDurationIsValid))
       || Number.isNaN(startsAt.getTime()) || !client.name || !client.phone
       || !/^\S+@\S+\.\S+$/.test(client.email)) {
     return json({ error: "The booking request is incomplete or invalid." }, 422);
@@ -146,6 +150,7 @@ export async function onRequestPost(context) {
   availabilityUrl.searchParams.set("startsAfter", payload.startsAt);
   availabilityUrl.searchParams.set("endsBefore", new Date(startsAt.getTime() + durationMinutes * 60000).toISOString());
   availabilityUrl.searchParams.set("durationMinutes", String(durationMinutes));
+  if (allowCustomDuration) availabilityUrl.searchParams.set("allowCustomDuration", "true");
   const availabilityResponse = await scopedAvailability({
     ...context, request: new Request(availabilityUrl, { headers: context.request.headers }),
   });
@@ -168,7 +173,10 @@ export async function onRequestPost(context) {
     serviceOption: `${durationMinutes / 60} hours`, preferredDate, preferredTime,
     firstName, lastName, artistName: client.name, email: client.email,
     phone: client.phone, stemCount: "", socialLinks: "",
-    notes: "Created and owner-approved by Simon through the scoped service API.", usesCalendar: true,
+    notes: allowCustomDuration
+      ? "Created and owner-approved by Simon using the custom-duration override."
+      : "Created and owner-approved by Simon through the scoped service API.",
+    usesCalendar: true,
   };
   let depositAmount;
   try {
@@ -183,6 +191,7 @@ export async function onRequestPost(context) {
     },
     client, service, payload.startsAt, endsAt,
   );
+  result.customDurationOverride = allowCustomDuration;
 
   try {
     await context.env.APPLICATIONS_DB.batch([
