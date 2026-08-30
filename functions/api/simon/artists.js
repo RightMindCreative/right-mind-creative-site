@@ -1,16 +1,50 @@
 import { json } from "../../_lib/admin-auth.js";
 import { requireSimonService } from "../../_lib/simon-service-auth.js";
 
-const displayName = (row) => row.artist_name || `${row.first_name || ""} ${row.last_name || ""}`.trim();
 const normalizedEmail = (value) => String(value || "").trim().toLowerCase();
 export const normalizedPhone = (value) => String(value || "").replace(/\D/g, "").slice(-10);
+export const artistSummary = (artist) => {
+  const fullName = `${artist.first_name || ""} ${artist.last_name || ""}`.trim();
+  const artistName = String(artist.artist_name || "").trim();
+  return {
+    id: String(artist.id || ""),
+    fullName,
+    artistName,
+    greetingName: artistName || fullName,
+    phone: String(artist.phone || ""),
+    email: String(artist.email || ""),
+  };
+};
 
 export async function onRequestGet(context) {
   const unauthorized = requireSimonService(context);
   if (unauthorized) return unauthorized;
-  const name = (new URL(context.request.url).searchParams.get("name") || "").trim();
-  const phone = normalizedPhone(new URL(context.request.url).searchParams.get("phone"));
-  if (!name && !phone) return json({ error: "An artist name or phone is required." }, 400);
+  const searchParams = new URL(context.request.url).searchParams;
+  const name = (searchParams.get("name") || "").trim();
+  const phone = normalizedPhone(searchParams.get("phone"));
+  const email = normalizedEmail(searchParams.get("email"));
+  if (!name && !phone && !email) {
+    return json({ error: "An artist name, email, or phone is required." }, 400);
+  }
+  if (email) {
+    const [manualResult, applicationResult] = await Promise.all([
+      context.env.APPLICATIONS_DB.prepare(`
+        SELECT id, first_name, last_name, artist_name, email, phone
+        FROM manual_artists
+        WHERE LOWER(TRIM(email)) = ? OR LOWER(TRIM(linked_email)) = ?
+        ORDER BY updated_at DESC LIMIT 1
+      `).bind(email, email).all(),
+      context.env.APPLICATIONS_DB.prepare(`
+        SELECT id, first_name, last_name, artist_name, email, phone
+        FROM applications
+        WHERE status IN ('approved', 'payment_pending', 'confirmed')
+          AND LOWER(TRIM(email)) = ?
+        ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1
+      `).bind(email).all(),
+    ]);
+    const rows = [...(manualResult.results || []), ...(applicationResult.results || [])];
+    return json({ artists: rows.slice(0, 1).map(artistSummary) });
+  }
   if (phone) {
     const [manualResult, applicationResult] = await Promise.all([
       context.env.APPLICATIONS_DB.prepare(`
@@ -27,10 +61,7 @@ export async function onRequestGet(context) {
       `).bind(`%${phone}`).all(),
     ]);
     const rows = [...(manualResult.results || []), ...(applicationResult.results || [])];
-    return json({ artists: rows.slice(0, 1).map((artist) => ({
-      id: String(artist.id || ""), name: displayName(artist),
-      phone: String(artist.phone || ""), email: String(artist.email || ""),
-    })) });
+    return json({ artists: rows.slice(0, 1).map(artistSummary) });
   }
   const pattern = `%${name.replace(/[\\%_]/g, "\\$&")}%`;
 
@@ -76,12 +107,7 @@ export async function onRequestGet(context) {
     });
   }
 
-  return json({ artists: [...artists.values()].map((artist) => ({
-    id: String(artist.id || ""),
-    name: displayName(artist),
-    phone: String(artist.phone || ""),
-    email: String(artist.email || ""),
-  })) });
+  return json({ artists: [...artists.values()].map(artistSummary) });
 }
 
 export function onRequest(context) {

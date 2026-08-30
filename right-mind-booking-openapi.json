@@ -227,12 +227,40 @@
         "operationId": "findArtist",
         "x-access-tier": "companion-server",
         "security": [{ "ServiceBearer": [] }],
-        "summary": "Find an approved artist by name or phone",
+        "summary": "Resolve an approved artist by name, email, or phone",
         "parameters": [
           { "name": "name", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "email", "in": "query", "required": false, "schema": { "type": "string", "format": "email" } },
           { "name": "phone", "in": "query", "required": false, "schema": { "type": "string" } }
         ],
-        "responses": { "200": { "description": "Matching artists" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+        "responses": {
+          "200": {
+            "description": "Matching approved artists. Use greetingName for the client greeting.",
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "required": ["artists"],
+              "properties": {
+                "artists": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["id", "fullName", "artistName", "greetingName", "email", "phone"],
+                    "properties": {
+                      "id": { "type": "string" },
+                      "fullName": { "type": "string" },
+                      "artistName": { "type": "string" },
+                      "greetingName": { "type": "string" },
+                      "email": { "type": "string" },
+                      "phone": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
       }
     },
     "/api/simon/bookings": {

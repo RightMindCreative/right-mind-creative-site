@@ -8,7 +8,7 @@ import { requireSimonService } from "../functions/_lib/simon-service-auth.js";
 import {
   bookingSummary, SIMON_APPLICATION_STATUS, SIMON_PAYMENT_STATUS, simonPaymentIsConfigured,
 } from "../functions/api/simon/bookings.js";
-import { normalizedPhone } from "../functions/api/simon/artists.js";
+import { artistSummary, normalizedPhone } from "../functions/api/simon/artists.js";
 import {
   applicationApprovedEvent,
   applicationCancelledEvent,
@@ -42,6 +42,16 @@ test("service aliases resolve to one website-owned ID", () => {
 
 test("artist authorization normalizes phone numbers to ten digits", () => {
   assert.equal(normalizedPhone("+1 (402) 555-0100"), "4025550100");
+});
+
+test("artist directory keeps account and greeting identities separate", () => {
+  assert.deepEqual(artistSummary({
+    id: "artist-1", first_name: "Ryan", last_name: "VanSickle",
+    artist_name: "roo", email: "ryan@example.com", phone: "+1 531 000 0000",
+  }), {
+    id: "artist-1", fullName: "Ryan VanSickle", artistName: "roo",
+    greetingName: "roo", email: "ryan@example.com", phone: "+1 531 000 0000",
+  });
 });
 
 test("missing and incorrect service credentials are rejected", async () => {

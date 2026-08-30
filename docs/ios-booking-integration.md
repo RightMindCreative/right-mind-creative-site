@@ -147,3 +147,27 @@ The companion-server tier currently supports:
 - Requesting, assigning, accepting, and declining Jake's engineer handoffs.
 
 The exact route contract is in the OpenAPI file. Cancellation/refund remains an admin-dashboard workflow and is intentionally not exposed as a general service endpoint yet.
+
+## Resolving an app greeting from the artist directory
+
+The app's trusted Cloudflare Worker may resolve an authenticated account with either:
+
+- `GET /api/simon/artists?email=<account email>` (preferred), or
+- `GET /api/simon/artists?phone=<account phone>`.
+
+Send the service bearer token only from the Worker. The result keeps the account holder and artist identity separate:
+
+```json
+{
+  "artists": [{
+    "id": "artist-id",
+    "fullName": "Ryan VanSickle",
+    "artistName": "roo",
+    "greetingName": "roo",
+    "email": "account@example.com",
+    "phone": "+1 531 000 0000"
+  }]
+}
+```
+
+The Worker should return only the minimum client-safe result, for example `{ "greetingName": "roo" }`. If `artists` is empty, fall back to the first name already stored in the authenticated app account. Never return the directory bearer token or the full artist record to the iOS client.
