@@ -1,0 +1,45 @@
+name = "right-mind-creative-site"
+pages_build_output_dir = "."
+compatibility_date = "2026-07-28"
+
+# The default Pages environment is preview/staging. Production bindings are
+# intentionally isolated below and are never selected by Simon V3 staging work.
+[vars]
+BOOKING_TIME_ZONE = "America/Chicago"
+GOOGLE_CALENDAR_ID = "c_3b504bf0ad3a45df25a8ae608e8105b9e8251ee0fc89e0168fa99ceeaabb0232@group.calendar.google.com"
+GOOGLE_EMAIL_IMPERSONATED_USER = "welcome@rightmindcreative.co"
+GOOGLE_IMPERSONATED_USER = "roo@rightmindcreative.co"
+GOOGLE_SERVICE_ACCOUNT_EMAIL = "right-mind-booking-staging@calendar-api-500920.iam.gserviceaccount.com"
+
+[[d1_databases]]
+binding = "APPLICATIONS_DB"
+database_name = "APPLICATIONS_DB"
+database_id = "81fb13b1-f3a6-42ef-8ee7-0ce2b7d07507"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "APPLICATION_UPLOADS"
+bucket_name = "right-mind-uploads-staging"
+
+[env.production.vars]
+APPLICATION_CALENDAR_COLOR_ID = "6"
+BOOKING_CALENDAR_COLOR_ID = "10"
+BOOKING_TIME_ZONE = "America/Chicago"
+DECISION_EMAIL_FROM = "welcome@rightmindcreative.co"
+DEPOSIT_PENDING_CALENDAR_COLOR_ID = "5"
+GOOGLE_CALENDAR_ID = "roo@rightmindcreative.co"
+GOOGLE_EMAIL_IMPERSONATED_USER = "welcome@rightmindcreative.co"
+GOOGLE_IMPERSONATED_USER = "roo@rightmindcreative.co"
+GOOGLE_SERVICE_ACCOUNT_EMAIL = "right-mind-booking-staging@calendar-api-500920.iam.gserviceaccount.com"
+PUBLIC_SITE_URL = "https://www.rightmindcreative.co"
+SIMON_APPLICATION_WEBHOOK_URL = "https://simon.rightmindcreative.co/events/application-submitted"
+
+[[env.production.d1_databases]]
+binding = "APPLICATIONS_DB"
+database_name = "APPLICATIONS_DB"
+database_id = "c2a0e912-c2b6-4eaf-92d3-1893867fc826"
+migrations_dir = "migrations"
+
+[[env.production.r2_buckets]]
+binding = "APPLICATION_UPLOADS"
+bucket_name = "right-mind-uploads-production"
