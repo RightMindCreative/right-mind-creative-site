@@ -3,7 +3,6 @@ const songs = [
  ['Nearer My God to Thee','The Lower Lights','PeN9ljKvrY4','Draw near','What helps you feel close to God?'],
  ['Turn Your Eyes Upon Jesus','Lauren Daigle','L57ox0iQU7A','A renewed gaze','Where are you turning your attention today?'],
  ['Give Me Rest','The Gray Havens','BNqbf1BU6SU','Letting go','What are you ready to place in God’s hands?'],
- ['Rest','Michael Kiwanuka','9X-aCebgZPg','Be still','What would it mean to receive rest today?'],
  ['Morning Light','Josh Garrels','azDh0l3gjQI','Light returns','Where have you noticed a new beginning?'],
  ['Full Circle','AHI','9wdSj3My68Y','Coming home','What has this year taught you about belonging?'],
  ['Farther Along','Josh Garrels','EWBGcNb9F5c','Keep walking','What hope helps you take the next step?'],
@@ -35,7 +34,7 @@ function loadPlayer(){
 }
 function select(i){
  current=Math.max(0,Math.min(songs.length-1,i));const song=songs[current];
- $('chapter').textContent=`${number(current)} / 12`;$('theme').textContent=song[3].toUpperCase();
+ $('chapter').textContent=`${number(current)} / ${songs.length}`;$('theme').textContent=song[3].toUpperCase();
  $('song-title').textContent=song[0];$('artist').textContent=song[1];$('prompt').textContent=song[4];
  $('external').href=`https://www.youtube.com/watch?v=${song[2]}`;
  $('previous').disabled=current===0;$('next').disabled=current===songs.length-1;
