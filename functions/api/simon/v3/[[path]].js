@@ -3,6 +3,7 @@ import {
   matchSimonV3Route, operationFromRow, parseVersion, policies, problem, resourceFromRow,
 } from "../../../_lib/simon-v3.js";
 import { calendarIsConfigured, getBusyPeriods } from "../../../_lib/google-calendar.js";
+import { getStripeHealth } from "../../../_lib/stripe.js";
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
 const now = () => new Date().toISOString();
@@ -166,9 +167,33 @@ const readSpecial = async (context, route, actor, traceId) => {
   if (route.special === "catalog") return jsonResponse(catalog());
   if (route.special === "policies") return jsonResponse(policies());
   if (route.special === "health") {
+    const latestCalendar = await db.prepare(`
+      SELECT evidence_json, created_at FROM simon_v3_events
+      WHERE action = 'checkAvailability' AND outcome = 'succeeded'
+      ORDER BY created_at DESC LIMIT 1
+    `).first();
+    let calendarVerified = false;
+    if (latestCalendar) {
+      try {
+        const evidence = JSON.parse(latestCalendar.evidence_json || "{}");
+        calendarVerified = evidence.provider === "google_calendar"
+          && evidence.provider_confirmed === true;
+      } catch {
+        calendarVerified = false;
+      }
+    }
+    let stripe = { state: "unreachable", mode: null };
+    try {
+      stripe = await getStripeHealth(context.env);
+    } catch (error) {
+      console.error("Simon V3 staging Stripe health check failed safely", {
+        error: String(error?.message || error),
+      });
+    }
     const items = [
       { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "d1", state: "ready", environment: "staging" }, evidence_refs: [] },
-      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "external_providers", state: "not_verified", environment: "staging" }, evidence_refs: [] },
+      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "google_calendar", state: calendarVerified ? "ready" : "not_verified", environment: "staging", verified_at: latestCalendar?.created_at || null }, evidence_refs: [] },
+      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "stripe", state: stripe.state, mode: stripe.mode, environment: "staging" }, evidence_refs: [] },
     ];
     await auditRead(context, route, actor, traceId, null, "succeeded");
     return jsonResponse({ items, next_cursor: null });

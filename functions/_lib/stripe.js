@@ -2,6 +2,19 @@ const STRIPE_API = "https://api.stripe.com/v1";
 
 export const stripeIsConfigured = (env) => Boolean(env.STRIPE_SECRET_KEY);
 
+export const getStripeHealth = async (env) => {
+  if (!stripeIsConfigured(env)) return { state: "not_configured", mode: null };
+  const response = await fetch(`${STRIPE_API}/balance`, {
+    headers: { authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(`Stripe health request failed (${response.status}).`);
+  return {
+    state: result.livemode === false ? "ready" : "unsafe_live_mode",
+    mode: result.livemode === false ? "test" : "live",
+  };
+};
+
 export const createDepositCheckout = async (env, application, origin) => {
   const statusUrl = `${origin}/application-status?token=${encodeURIComponent(application.public_status_token)}`;
   const form = new URLSearchParams({

@@ -178,6 +178,31 @@ test("staging calendar availability validates the complete interval before provi
   assert.equal((await response.json()).code, "validation_error");
 });
 
+test("dependency health confirms Stripe test mode without exposing account data", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), "https://api.stripe.com/v1/balance");
+    assert.equal(options.headers.authorization, "Bearer private-test-key");
+    return new Response(JSON.stringify({
+      livemode: false,
+      available: [{ amount: 123456, currency: "usd", source_types: { card: 123456 } }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const request = new Request("https://preview.example/api/simon/v3/health", {
+    headers: headers(),
+  });
+  const response = await onRequest(context(request, { STRIPE_SECRET_KEY: "private-test-key" }));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  const stripe = body.items.find((item) => item.data.dependency === "stripe");
+  assert.deepEqual(stripe.data, {
+    dependency: "stripe", state: "ready", mode: "test", environment: "staging",
+  });
+  assert.equal(JSON.stringify(body).includes("123456"), false);
+  assert.equal(JSON.stringify(body).includes("private-test-key"), false);
+});
+
 test("client actors cannot access the administrative client directory", async () => {
   const request = new Request("https://preview.example/api/simon/v3/clients", {
     headers: headers({ "x-simon-role": "client" }),
