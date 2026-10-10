@@ -913,6 +913,81 @@ const mutateBooking = async (
       return problem(502, "provider_failure", "Google Calendar did not confirm the reschedule", traceId, "The original V3 booking record was preserved; reconcile the provider before retry.", { operation_id: operationId });
     }
   }
+  if (route.operationId === "updateBooking") {
+    if (!current || current.state === "cancelled") {
+      return problem(409, "invalid_transition", "Cancelled booking requires explicit restoration", traceId);
+    }
+    if (!hasOnlyKeys(body.data, ["summary", "service_id"])) {
+      return problem(400, "validation_error", "Booking edit may change only summary or service", traceId);
+    }
+    const currentData = JSON.parse(current.data_json);
+    const summary = body.data.summary === undefined ? currentData.summary : clean(body.data.summary, 200);
+    const serviceId = body.data.service_id === undefined ? currentData.service_id : clean(body.data.service_id, 100);
+    if (!summary || !serviceId) return problem(400, "validation_error", "Booking summary and service are required", traceId);
+    const providerEventId = clean(currentData.provider_event_id, 1024);
+    const version = Number(current.version) + 1;
+    const refs = [{ kind: "booking", id: current.id, version }];
+    const before = JSON.stringify({ state: current.state, owner_person_id: current.owner_person_id, data_json: current.data_json, archived: current.archived });
+    await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs, before });
+    try {
+      const event = await updateCalendarEvent(context.env, providerEventId, { summary });
+      if (!event?.id || event.id !== providerEventId || event.status === "cancelled") throw new Error("Invalid booking update receipt.");
+      const receipt = `${event.id}:${clean(event.etag, 160) || "confirmed"}`;
+      const data = { ...currentData, summary, service_id: serviceId };
+      const steps = [{ name: route.operationId, status: "succeeded", provider_confirmed: true, provider_receipt_ref: receipt, retry_safe: true, error: null }];
+      await db.batch([
+        db.prepare("UPDATE simon_v3_resources SET version = ?, data_json = ?, updated_at = ? WHERE id = ?").bind(version, JSON.stringify(data), now(), current.id),
+        db.prepare("UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?, steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?")
+          .bind(JSON.stringify(refs), JSON.stringify(steps), JSON.stringify({ state: current.state, owner_person_id: current.owner_person_id, data_json: JSON.stringify(data), archived: current.archived }), now(), operationId),
+        eventStatement(db, { traceId, route, actor, resourceId: current.id, operationId, outcome: "succeeded", evidence: { provider: "google_calendar", provider_confirmed: true, receipt } }),
+      ]);
+      return jsonResponse(operationFromRow(await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(operationId).first()), 202);
+    } catch (error) {
+      await failProviderOperation(db, { id: operationId, route, actor, traceId, resourceId: current.id });
+      return problem(502, "provider_failure", "Google Calendar did not confirm the booking edit", traceId, "The original V3 record was preserved; reconcile the provider before retry.", { operation_id: operationId });
+    }
+  }
+  if (route.operationId === "restoreBooking") {
+    if (!current || current.state !== "cancelled") return problem(409, "invalid_transition", "Only a cancelled booking can be restored", traceId);
+    if (!hasOnlyKeys(body.data, ["starts_at", "ends_at"])) return problem(400, "validation_error", "Restore requires a fresh start and end", traceId);
+    const startsAt = new Date(body.data.starts_at || "");
+    const endsAt = new Date(body.data.ends_at || "");
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt || endsAt.getTime() - startsAt.getTime() > 12 * 60 * 60 * 1000) {
+      return problem(400, "validation_error", "Restore requires a valid complete duration", traceId);
+    }
+    const busy = await getBusyPeriods(context.env, startsAt.toISOString(), endsAt.toISOString());
+    if (busy.some((period) => startsAt < new Date(period.end) && endsAt > new Date(period.start))) return problem(409, "invalid_transition", "The complete restore duration is unavailable", traceId);
+    const currentData = JSON.parse(current.data_json);
+    const providerEventId = `simon${(await hashJson({ idempotency_key: key })).slice(0, 48)}`;
+    const state = currentData.payment_state === "deposit_pending" ? "held" : "booked";
+    const version = Number(current.version) + 1;
+    const refs = [{ kind: "booking", id: current.id, version }];
+    const before = JSON.stringify({ state: current.state, owner_person_id: current.owner_person_id, data_json: current.data_json, archived: current.archived });
+    await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs, before });
+    try {
+      const event = await createCalendarEvent(context.env, {
+        id: providerEventId, summary: currentData.summary,
+        start: { dateTime: startsAt.toISOString(), timeZone: "America/Chicago" },
+        end: { dateTime: endsAt.toISOString(), timeZone: "America/Chicago" }, transparency: "opaque",
+        extendedProperties: { private: { simonV3ResourceId: current.id, requestHash } },
+      });
+      if (!event?.id || event.id !== providerEventId || event.status === "cancelled") throw new Error("Invalid booking restore receipt.");
+      const receipt = `${event.id}:${clean(event.etag, 160) || "confirmed"}`;
+      const data = { ...currentData, starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString(), provider_event_id: event.id, booking_state: state };
+      const steps = [{ name: route.operationId, status: "succeeded", provider_confirmed: true, provider_receipt_ref: receipt, retry_safe: true, error: null }];
+      await db.batch([
+        db.prepare("UPDATE simon_v3_resources SET version = ?, state = ?, data_json = ?, updated_at = ? WHERE id = ?").bind(version, state, JSON.stringify(data), now(), current.id),
+        db.prepare("UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?, steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?")
+          .bind(JSON.stringify(refs), JSON.stringify(steps), JSON.stringify({ state, owner_person_id: current.owner_person_id, data_json: JSON.stringify(data), archived: current.archived }), now(), operationId),
+        eventStatement(db, { traceId, route, actor, resourceId: current.id, operationId, outcome: "succeeded", evidence: { provider: "google_calendar", provider_confirmed: true, receipt } }),
+      ]);
+      return jsonResponse(operationFromRow(await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(operationId).first()), 202);
+    } catch (error) {
+      try { await deleteCalendarEvent(context.env, providerEventId); } catch { /* reconcile by deterministic ID */ }
+      await failProviderOperation(db, { id: operationId, route, actor, traceId, resourceId: current.id });
+      return problem(502, "provider_failure", "Google Calendar did not confirm booking restoration", traceId, "The booking remains cancelled.", { operation_id: operationId });
+    }
+  }
   return failedProviderOperation(context, route, actor, traceId, key, requestHash);
 };
 
@@ -983,7 +1058,7 @@ const mutate = async (context, route, actor, traceId) => {
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );
   }
-  if (["createBooking", "rescheduleBooking", "cancelBooking"].includes(route.operationId)) {
+  if (["createBooking", "updateBooking", "rescheduleBooking", "cancelBooking", "restoreBooking"].includes(route.operationId)) {
     return mutateBooking(
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );

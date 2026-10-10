@@ -66,10 +66,17 @@ const statefulCalendarDb = () => {
         status: "succeeded", resource_refs_json, steps_json, after_json, completed_at,
       });
     } else if (sql.includes("UPDATE simon_v3_resources SET version")) {
-      const [version, data_json, updated_at, id] = values;
-      Object.assign(resources.get(id), {
-        version, state: sql.includes("state = 'cancelled'") ? "cancelled" : "active",
-        data_json, updated_at,
+      const restoresState = sql.includes("state = ?");
+      const [version, stateOrData, dataOrUpdated, updatedOrId, maybeId] = values;
+      const id = restoresState ? maybeId : updatedOrId;
+      const existing = resources.get(id);
+      Object.assign(existing, {
+        version,
+        state: sql.includes("state = 'cancelled'")
+          ? "cancelled"
+          : restoresState ? stateOrData : existing.state,
+        data_json: restoresState ? dataOrUpdated : stateOrData,
+        updated_at: restoresState ? updatedOrId : dataOrUpdated,
       });
     } else if (sql.includes("INSERT INTO simon_v3_events")) {
       events.push(values);
@@ -388,7 +395,7 @@ test("client actors cannot create bookings directly", async () => {
   assert.equal((await response.json()).code, "forbidden");
 });
 
-test("admin booking create and no-refund cancel require Google receipts", async (t) => {
+test("admin booking create, edit, reschedule, cancel, and restore require Google receipts", async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   const keyPair = await crypto.subtle.generateKey(
@@ -398,6 +405,7 @@ test("admin booking create and no-refund cancel require Google receipts", async 
   const privateBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
   const privateKey = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(privateBytes).toString("base64")}\n-----END PRIVATE KEY-----`;
   let providerId = "";
+  let deleteCount = 0;
   globalThis.fetch = async (url, options = {}) => {
     if (String(url).includes("oauth2.googleapis.com/token")) {
       return new Response(JSON.stringify({ access_token: "test" }), { status: 200 });
@@ -413,6 +421,7 @@ test("admin booking create and no-refund cancel require Google receipts", async 
       return new Response(JSON.stringify({ id: providerId, etag: "reschedule-etag", status: "confirmed" }), { status: 200 });
     }
     assert.equal(options.method, "DELETE");
+    deleteCount += 1;
     return new Response(null, { status: 204 });
   };
   const db = statefulCalendarDb();
@@ -448,16 +457,56 @@ test("admin booking create and no-refund cancel require Google receipts", async 
   const rescheduled = await onRequest(context(rescheduleRequest, env));
   assert.equal(rescheduled.status, 202);
   assert.equal(db.resources.get(bookingId).version, 2);
+  const updateRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}`, {
+    method: "PATCH",
+    headers: headers({
+      "content-type": "application/json", "idempotency-key": "booking-update-admin-0001",
+      "if-match": "2",
+    }),
+    body: JSON.stringify({ actor, reason: "edit synthetic booking", data: {
+      summary: "Updated synthetic booking", service_id: "recording-session",
+    } }),
+  });
+  const updated = await onRequest(context(updateRequest, env));
+  assert.equal(updated.status, 202);
+  assert.equal(db.resources.get(bookingId).version, 3);
   const cancelRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/cancel`, {
     method: "POST",
     headers: headers({
       "content-type": "application/json", "idempotency-key": "booking-cancel-admin-0001",
-      "if-match": "2",
+      "if-match": "3",
     }),
     body: JSON.stringify({ actor, reason: "cancel synthetic booking", data: {} }),
   });
   const cancelled = await onRequest(context(cancelRequest, env));
   assert.equal(cancelled.status, 202);
   assert.equal(db.resources.get(bookingId).state, "cancelled");
+  assert.equal(db.resources.get(bookingId).version, 4);
+  const restoreRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/restore`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json", "idempotency-key": "booking-restore-admin-0001",
+    }),
+    body: JSON.stringify({ actor, reason: "explicitly restore synthetic booking", data: {
+      starts_at: "2026-10-22T18:00:00Z", ends_at: "2026-10-22T20:00:00Z",
+    } }),
+  });
+  const restored = await onRequest(context(restoreRequest, env));
+  assert.equal(restored.status, 202);
+  assert.equal(db.resources.get(bookingId).state, "booked");
+  assert.equal(db.resources.get(bookingId).version, 5);
+  const cleanupRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/cancel`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json", "idempotency-key": "booking-cleanup-admin-0001",
+      "if-match": "5",
+    }),
+    body: JSON.stringify({ actor, reason: "clean up synthetic booking", data: {} }),
+  });
+  const cleaned = await onRequest(context(cleanupRequest, env));
+  assert.equal(cleaned.status, 202);
+  assert.equal(db.resources.get(bookingId).state, "cancelled");
+  assert.equal(db.resources.get(bookingId).version, 6);
+  assert.equal(deleteCount, 2);
   assert.equal(providerId.length > 10, true);
 });
