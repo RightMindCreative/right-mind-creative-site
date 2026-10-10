@@ -1742,10 +1742,14 @@ const rollback = async (context, route, actor, traceId, key, requestHash) => {
   const refs = JSON.parse(source.resource_refs_json || "[]");
   const target = refs[0];
   if (!target || !source.before_json) return problem(409, "invalid_transition", "Rollback evidence is incomplete", traceId);
+  const current = await loadResource(db, target.id);
+  if (!current || current.kind !== target.kind || Number(current.version) !== Number(target.version)) {
+    return problem(409, "version_conflict", "Rollback target changed after the source operation", traceId, "No state was changed.");
+  }
   const before = JSON.parse(source.before_json);
   const timestamp = now();
   const operationId = crypto.randomUUID();
-  const version = Number(target.version) + 1;
+  const version = Number(current.version) + 1;
   const operation = {
     id: operationId, status: "rolled_back", idempotency_key: key, trace_id: traceId,
     resource_refs: [{ kind: target.kind, id: target.id, version }],

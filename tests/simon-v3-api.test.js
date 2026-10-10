@@ -836,3 +836,33 @@ test("application submission and deposit approval coordinate calendar, Stripe, a
   });
   assert.equal((await onRequest(context(cleanup, env))).status, 202);
 });
+
+test("rollback refuses to overwrite a resource changed after the source operation", async () => {
+  const db = statefulCalendarDb();
+  const resourceId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const operationId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const timestamp = new Date().toISOString();
+  db.resources.set(resourceId, {
+    id: resourceId, kind: "client", version: 2, state: "active", owner_person_id: PERSON_ID,
+    data_json: JSON.stringify({ id: resourceId, name: "Newer value" }), archived: 0,
+    created_at: timestamp, updated_at: timestamp,
+  });
+  db.operations.set(operationId, {
+    id: operationId, action: "updateClient", idempotency_key: "older-operation-key",
+    request_hash: "hash", trace_id: TRACE_ID, requester_person_id: PERSON_ID,
+    requester_role: "admin", status: "succeeded",
+    resource_refs_json: JSON.stringify([{ kind: "client", id: resourceId, version: 1 }]),
+    steps_json: "[]", rollback_json: JSON.stringify({ available: true }),
+    before_json: JSON.stringify({ state: "active", owner_person_id: PERSON_ID, data_json: JSON.stringify({ id: resourceId, name: "Old value" }), archived: 0 }),
+    after_json: null, created_at: timestamp, completed_at: timestamp,
+  });
+  const request = new Request(`https://preview.example/api/simon/v3/operations/${operationId}/rollback`, {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "stale-rollback-guard-0001" }),
+    body: JSON.stringify({ actor, reason: "attempt stale rollback", data: {} }),
+  });
+  const response = await onRequest(context(request, { APPLICATIONS_DB: db, SIMON_V3_SERVICE_TOKEN: "staging-token" }));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, "version_conflict");
+  assert.equal(db.resources.get(resourceId).version, 2);
+});
