@@ -49,9 +49,15 @@ const statefulCalendarDb = () => {
         created_at, completed_at: null,
       });
     } else if (sql.includes("INSERT INTO simon_v3_resources")) {
-      const [id, owner_person_id, data_json, created_at, updated_at] = values;
+      const booking = sql.includes("'booking'");
+      const [id, stateOrOwner, ownerOrData, dataOrCreated, createdOrUpdated, maybeUpdated] = values;
+      const state = booking ? stateOrOwner : "active";
+      const owner_person_id = booking ? ownerOrData : stateOrOwner;
+      const data_json = booking ? dataOrCreated : ownerOrData;
+      const created_at = booking ? createdOrUpdated : dataOrCreated;
+      const updated_at = booking ? maybeUpdated : createdOrUpdated;
       resources.set(id, {
-        id, kind: "calendar_hold", version: 1, state: "active", owner_person_id,
+        id, kind: booking ? "booking" : "calendar_hold", version: 1, state, owner_person_id,
         data_json, archived: 0, created_at, updated_at,
       });
     } else if (sql.includes("UPDATE simon_v3_operations SET status = 'succeeded'")) {
@@ -364,4 +370,78 @@ test("client actors cannot access the administrative client directory", async ()
   const response = await onRequest(context(request));
   assert.equal(response.status, 403);
   assert.equal((await response.json()).code, "forbidden");
+});
+
+test("client actors cannot create bookings directly", async () => {
+  const request = new Request("https://preview.example/api/simon/v3/bookings", {
+    method: "POST",
+    headers: headers({
+      "x-simon-role": "client", "content-type": "application/json",
+      "idempotency-key": "client-booking-denied-0001",
+    }),
+    body: JSON.stringify({
+      actor: { ...actor, role: "client" }, reason: "client must escalate", data: {},
+    }),
+  });
+  const response = await onRequest(context(request));
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, "forbidden");
+});
+
+test("admin booking create and no-refund cancel require Google receipts", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const keyPair = await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true, ["sign", "verify"],
+  );
+  const privateBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(privateBytes).toString("base64")}\n-----END PRIVATE KEY-----`;
+  let providerId = "";
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      return new Response(JSON.stringify({ access_token: "test" }), { status: 200 });
+    }
+    if (String(url).endsWith("/freeBusy")) {
+      return new Response(JSON.stringify({ calendars: { "staging-calendar": { busy: [] } } }), { status: 200 });
+    }
+    if (options.method === "POST") {
+      providerId = JSON.parse(options.body).id;
+      return new Response(JSON.stringify({ id: providerId, etag: "booking-etag", status: "confirmed" }), { status: 200 });
+    }
+    assert.equal(options.method, "DELETE");
+    return new Response(null, { status: 204 });
+  };
+  const db = statefulCalendarDb();
+  const env = {
+    APPLICATIONS_DB: db, SIMON_V3_SERVICE_TOKEN: "staging-token",
+    GOOGLE_SERVICE_ACCOUNT_EMAIL: "staging@example.test",
+    GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: privateKey, GOOGLE_CALENDAR_ID: "staging-calendar",
+  };
+  const bookingId = "55555555-5555-4555-8555-555555555555";
+  const createRequest = new Request("https://preview.example/api/simon/v3/bookings", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "booking-create-admin-0001" }),
+    body: JSON.stringify({ actor, reason: "admin confirmed booking", data: {
+      id: bookingId, owner_person_id: PERSON_ID, summary: "Synthetic booking",
+      service_id: "vocal-recording", starts_at: "2026-10-20T18:00:00Z",
+      ends_at: "2026-10-20T20:00:00Z", payment_state: "deposit_waived",
+      agreed_total_minor: 20000, currency: "USD",
+    } }),
+  });
+  const created = await onRequest(context(createRequest, env));
+  assert.equal(created.status, 202);
+  assert.equal(db.resources.get(bookingId).state, "booked");
+  const cancelRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/cancel`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json", "idempotency-key": "booking-cancel-admin-0001",
+      "if-match": "1",
+    }),
+    body: JSON.stringify({ actor, reason: "cancel synthetic booking", data: {} }),
+  });
+  const cancelled = await onRequest(context(cancelRequest, env));
+  assert.equal(cancelled.status, 202);
+  assert.equal(db.resources.get(bookingId).state, "cancelled");
+  assert.equal(providerId.length > 10, true);
 });

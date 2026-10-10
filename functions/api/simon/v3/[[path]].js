@@ -682,6 +682,172 @@ const mutateCalendarHold = async (
   return failedProviderOperation(context, route, actor, traceId, key, requestHash);
 };
 
+const bookingInput = (data) => {
+  if (!hasOnlyKeys(data, [
+    "id", "owner_person_id", "application_id", "summary", "service_id",
+    "starts_at", "ends_at", "payment_state", "agreed_total_minor", "currency",
+  ])) return { error: "Booking data contains unsupported fields" };
+  const id = data.id ? String(data.id) : crypto.randomUUID();
+  const owner = String(data.owner_person_id || "");
+  const applicationId = data.application_id ? String(data.application_id) : null;
+  const summary = clean(data.summary, 200);
+  const serviceId = clean(data.service_id, 100);
+  const startsAt = new Date(data.starts_at || "");
+  const endsAt = new Date(data.ends_at || "");
+  const paymentState = clean(data.payment_state, 40);
+  const total = Number(data.agreed_total_minor);
+  if (!isUuid(id) || !isUuid(owner) || (applicationId && !isUuid(applicationId))) {
+    return { error: "Booking, owner, and application identifiers must be UUIDs" };
+  }
+  if (!summary || !serviceId) return { error: "Booking summary and service are required" };
+  if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+    return { error: "Booking start and end must be valid ordered timestamps" };
+  }
+  if (endsAt.getTime() - startsAt.getTime() > 12 * 60 * 60 * 1000) {
+    return { error: "Scheduled bookings cannot exceed 12 hours" };
+  }
+  if (!["deposit_pending", "deposit_waived", "deposit_paid"].includes(paymentState)) {
+    return { error: "Booking payment state is invalid" };
+  }
+  if (!Number.isInteger(total) || total < 0 || data.currency !== "USD") {
+    return { error: "Booking requires an exact non-negative USD price snapshot" };
+  }
+  return {
+    id, owner, applicationId, summary, serviceId, startsAt, endsAt,
+    paymentState, total, bookingState: paymentState === "deposit_pending" ? "held" : "booked",
+  };
+};
+
+const mutateBooking = async (
+  context, route, actor, traceId, key, requestHash, body, current,
+) => {
+  const db = context.env.APPLICATIONS_DB;
+  if (!calendarIsConfigured(context.env)) {
+    return failedProviderOperation(context, route, actor, traceId, key, requestHash);
+  }
+  const operationId = crypto.randomUUID();
+  if (route.operationId === "createBooking") {
+    const input = bookingInput(body.data);
+    if (input.error) return problem(400, "validation_error", input.error, traceId);
+    const busy = await getBusyPeriods(
+      context.env, input.startsAt.toISOString(), input.endsAt.toISOString(),
+    );
+    if (busy.some((period) => (
+      input.startsAt < new Date(period.end) && input.endsAt > new Date(period.start)
+    ))) return problem(409, "invalid_transition", "The complete booking duration is unavailable", traceId);
+    const providerEventId = `simon${(await hashJson({ idempotency_key: key })).slice(0, 48)}`;
+    const resourceRefs = [{ kind: "booking", id: input.id, version: 1 }];
+    const timestamp = await beginProviderOperation(db, {
+      id: operationId, route, key, requestHash, traceId, actor, resourceRefs,
+    });
+    try {
+      const event = await createCalendarEvent(context.env, {
+        id: providerEventId, summary: input.summary,
+        start: { dateTime: input.startsAt.toISOString(), timeZone: "America/Chicago" },
+        end: { dateTime: input.endsAt.toISOString(), timeZone: "America/Chicago" },
+        transparency: "opaque",
+        extendedProperties: { private: { simonV3ResourceId: input.id, requestHash } },
+      });
+      if (!event?.id || event.id !== providerEventId || event.status === "cancelled") {
+        throw new Error("Google Calendar returned an invalid booking receipt.");
+      }
+      const receipt = `${event.id}:${clean(event.etag, 160) || "confirmed"}`;
+      const data = {
+        id: input.id, owner_person_id: input.owner, application_id: input.applicationId,
+        summary: input.summary, service_id: input.serviceId,
+        starts_at: input.startsAt.toISOString(), ends_at: input.endsAt.toISOString(),
+        payment_state: input.paymentState, booking_state: input.bookingState,
+        agreed_total_minor: input.total, currency: "USD", provider_event_id: event.id,
+      };
+      const steps = [{
+        name: route.operationId, status: "succeeded", provider_confirmed: true,
+        provider_receipt_ref: receipt, retry_safe: true, error: null,
+      }];
+      const after = JSON.stringify({
+        state: input.bookingState, owner_person_id: input.owner,
+        data_json: JSON.stringify(data), archived: 0,
+      });
+      await db.batch([
+        db.prepare(`INSERT INTO simon_v3_resources
+          (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+          VALUES (?, 'booking', 1, ?, ?, ?, 0, ?, ?)`)
+          .bind(input.id, input.bookingState, input.owner, JSON.stringify(data), timestamp, timestamp),
+        db.prepare(`UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?,
+          steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?`)
+          .bind(JSON.stringify(resourceRefs), JSON.stringify(steps), after, now(), operationId),
+        eventStatement(db, {
+          traceId, route, actor, resourceId: input.id, operationId, outcome: "succeeded",
+          evidence: { provider: "google_calendar", provider_confirmed: true, receipt },
+        }),
+      ]);
+      const row = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?")
+        .bind(operationId).first();
+      return jsonResponse(operationFromRow(row), 202);
+    } catch (error) {
+      try { await deleteCalendarEvent(context.env, providerEventId); } catch { /* reconcile by ID */ }
+      await failProviderOperation(db, {
+        id: operationId, route, actor, traceId, resourceId: input.id,
+      });
+      return problem(502, "provider_failure", "Google Calendar did not confirm the booking", traceId, "No booking was represented as successful.", { operation_id: operationId });
+    }
+  }
+  if (route.operationId === "cancelBooking") {
+    if (!current || current.state === "cancelled") {
+      return problem(409, "invalid_transition", "Booking is not active", traceId);
+    }
+    const currentData = JSON.parse(current.data_json);
+    const refundChoice = body.data.refund_choice || null;
+    if (currentData.payment_state === "deposit_paid" && !["full", "partial", "none"].includes(refundChoice)) {
+      return problem(409, "invalid_transition", "Paid cancellation requires full, partial, or no-refund choice", traceId);
+    }
+    if (["full", "partial"].includes(refundChoice)) {
+      return problem(409, "invalid_transition", "Complete the verified Stripe refund before calendar cancellation", traceId);
+    }
+    const providerEventId = clean(currentData.provider_event_id, 1024);
+    const version = Number(current.version) + 1;
+    const refs = [{ kind: "booking", id: current.id, version }];
+    const before = JSON.stringify({
+      state: current.state, owner_person_id: current.owner_person_id,
+      data_json: current.data_json, archived: current.archived,
+    });
+    await beginProviderOperation(db, {
+      id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs, before,
+    });
+    try {
+      const receipt = await deleteCalendarEvent(context.env, providerEventId);
+      const data = { ...currentData, booking_state: "cancelled" };
+      const steps = [{
+        name: route.operationId, status: "succeeded", provider_confirmed: true,
+        provider_receipt_ref: `${providerEventId}:${receipt.status}`,
+        retry_safe: true, error: null,
+      }];
+      await db.batch([
+        db.prepare(`UPDATE simon_v3_resources SET version = ?, state = 'cancelled', data_json = ?,
+          updated_at = ? WHERE id = ?`).bind(version, JSON.stringify(data), now(), current.id),
+        db.prepare(`UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?,
+          steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?`)
+          .bind(JSON.stringify(refs), JSON.stringify(steps), JSON.stringify({
+            state: "cancelled", owner_person_id: current.owner_person_id,
+            data_json: JSON.stringify(data), archived: current.archived,
+          }), now(), operationId),
+        eventStatement(db, {
+          traceId, route, actor, resourceId: current.id, operationId, outcome: "succeeded",
+          evidence: { provider: "google_calendar", provider_confirmed: true, action: "deleted" },
+        }),
+      ]);
+      const row = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?")
+        .bind(operationId).first();
+      return jsonResponse(operationFromRow(row), 202);
+    } catch (error) {
+      await failProviderOperation(db, {
+        id: operationId, route, actor, traceId, resourceId: current.id,
+      });
+      return problem(502, "provider_failure", "Google Calendar did not confirm booking cancellation", traceId, "The operation requires reconciliation before retry.", { operation_id: operationId });
+    }
+  }
+  return failedProviderOperation(context, route, actor, traceId, key, requestHash);
+};
+
 const rollback = async (context, route, actor, traceId, key, requestHash) => {
   const db = context.env.APPLICATIONS_DB;
   const source = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(route.params.operation_id).first();
@@ -746,6 +912,11 @@ const mutate = async (context, route, actor, traceId) => {
   }
   if (["createCalendarHold", "updateCalendarHold", "cancelCalendarHold"].includes(route.operationId)) {
     return mutateCalendarHold(
+      context, route, actor, traceId, idempotencyKey, requestHash, body, current,
+    );
+  }
+  if (["createBooking", "cancelBooking"].includes(route.operationId)) {
+    return mutateBooking(
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );
   }

@@ -39,7 +39,7 @@ export const SIMON_V3_ROUTES = Object.freeze([
   route("POST", "/applications/:application_id/approve-with-waiver", "approveApplicationWithWaiver", "application", { provider: "notifications" }),
   route("POST", "/applications/:application_id/decline", "declineApplication", "application", { provider: "notifications" }),
   route("GET", "/bookings", "listBookings", "booking", { roles: CLIENT, ownerScoped: true }),
-  route("POST", "/bookings", "createBooking", "booking", { roles: CLIENT, ownerScoped: true, create: true, provider: "calendar" }),
+  route("POST", "/bookings", "createBooking", "booking", { roles: STAFF, create: true, provider: "calendar" }),
   route("GET", "/bookings/:booking_id", "getBooking", "booking", { roles: CLIENT, ownerScoped: true }),
   route("PATCH", "/bookings/:booking_id", "updateBooking", "booking", { ifMatch: true, provider: "calendar" }),
   route("POST", "/bookings/:booking_id/reschedule", "rescheduleBooking", "booking", { ifMatch: true, provider: "calendar" }),
