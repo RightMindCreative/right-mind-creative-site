@@ -4,6 +4,7 @@ import {
 } from "../../../_lib/simon-v3.js";
 import {
   calendarIsConfigured, createCalendarEvent, deleteCalendarEvent, getBusyPeriods,
+  listCalendarEvents, updateCalendarEvent,
 } from "../../../_lib/google-calendar.js";
 import { getStripeHealth } from "../../../_lib/stripe.js";
 
@@ -163,6 +164,70 @@ const checkCalendarAvailability = async (context, route, actor, traceId, data) =
   }
 };
 
+const centralDayRange = (dateText) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) return null;
+  const [year, month, day] = dateText.split("-").map(Number);
+  const solve = (extraDays) => {
+    const desired = Date.UTC(year, month - 1, day + extraDays, 0, 0, 0);
+    let instant = desired;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+      }).formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
+      const observed = Date.UTC(
+        Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+        Number(parts.hour), Number(parts.minute), Number(parts.second),
+      );
+      instant += desired - observed;
+    }
+    return new Date(instant);
+  };
+  const start = solve(0);
+  const end = solve(1);
+  return Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) ? null : { start, end };
+};
+
+const getCalendarAgenda = async (context, route, actor, traceId) => {
+  const dateText = clean(new URL(context.request.url).searchParams.get("date"), 10);
+  const range = centralDayRange(dateText);
+  if (!range) return problem(400, "validation_error", "Agenda date must be YYYY-MM-DD", traceId);
+  if (!calendarIsConfigured(context.env)) {
+    await auditRead(context, route, actor, traceId, null, "failed");
+    return problem(503, "provider_failure", "Staging calendar is not configured", traceId);
+  }
+  try {
+    const events = await listCalendarEvents(context.env, {
+      timeMin: range.start.toISOString(), timeMax: range.end.toISOString(),
+    });
+    const evidenceId = crypto.randomUUID();
+    await eventStatement(context.env.APPLICATIONS_DB, {
+      eventId: evidenceId, traceId, route, actor, outcome: "succeeded",
+      evidence: {
+        provider: "google_calendar", provider_confirmed: true,
+        event_count: events.length, projection: "admin_agenda",
+      },
+    }).run();
+    return jsonResponse({
+      items: events.map((event) => ({
+        id: crypto.randomUUID(), kind: "agenda", version: 1,
+        data: {
+          provider_event_id: clean(event.id, 1024), summary: clean(event.summary, 200),
+          status: clean(event.status, 40), start: event.start || null, end: event.end || null,
+        },
+        evidence_refs: [evidenceId],
+      })),
+      next_cursor: null,
+    });
+  } catch (error) {
+    console.error("Simon V3 staging calendar agenda failed safely", {
+      error: String(error?.message || error),
+    });
+    await auditRead(context, route, actor, traceId, null, "failed");
+    return problem(502, "provider_failure", "Staging calendar did not confirm the agenda", traceId);
+  }
+};
+
 const readSpecial = async (context, route, actor, traceId) => {
   const db = context.env.APPLICATIONS_DB;
   const url = new URL(context.request.url);
@@ -242,6 +307,9 @@ const readSpecial = async (context, route, actor, traceId) => {
 
 const readResource = async (context, route, actor, traceId) => {
   const db = context.env.APPLICATIONS_DB;
+  if (route.operationId === "getAgenda") {
+    return getCalendarAgenda(context, route, actor, traceId);
+  }
   if (route.provider) {
     await auditRead(context, route, actor, traceId, routeId(route), "failed");
     return problem(502, "provider_failure", `${route.provider} read has no verified staging receipt`, traceId, "No provider result was represented as successful.");
@@ -344,7 +412,7 @@ const calendarHoldInput = (data) => {
   }
   let recurrence = null;
   let googleRecurrence;
-  if (data.recurrence !== undefined) {
+  if (data.recurrence !== undefined && data.recurrence !== null) {
     if (!hasOnlyKeys(data.recurrence, ["frequency", "interval", "count"])) {
       return { error: "Calendar hold recurrence contains unsupported fields" };
     }
@@ -482,6 +550,83 @@ const mutateCalendarHold = async (
       return problem(502, "provider_failure", "Google Calendar did not confirm the hold", traceId, "No calendar hold was represented as successful.", { operation_id: operationId });
     }
   }
+  if (route.operationId === "updateCalendarHold") {
+    if (!current || current.state !== "active") {
+      return problem(409, "invalid_transition", "Calendar hold is not active", traceId);
+    }
+    if (!hasOnlyKeys(body.data, ["summary", "starts_at", "ends_at", "start_date", "end_date", "recurrence"])) {
+      return problem(400, "validation_error", "Calendar hold update contains unsupported fields", traceId);
+    }
+    const currentData = JSON.parse(current.data_json);
+    const candidate = { ...currentData, ...body.data, id: current.id };
+    if (body.data.starts_at !== undefined || body.data.ends_at !== undefined) {
+      delete candidate.start_date;
+      delete candidate.end_date;
+    }
+    if (body.data.start_date !== undefined || body.data.end_date !== undefined) {
+      delete candidate.starts_at;
+      delete candidate.ends_at;
+    }
+    delete candidate.provider_event_id;
+    delete candidate.state;
+    const input = calendarHoldInput(candidate);
+    if (input.error) return problem(400, "validation_error", input.error, traceId);
+    const providerEventId = clean(currentData.provider_event_id, 1024);
+    if (!providerEventId) return problem(409, "invalid_transition", "Calendar hold lacks provider evidence", traceId);
+    const version = Number(current.version) + 1;
+    const resourceRefs = [{ kind: "calendar_hold", id: current.id, version }];
+    const before = JSON.stringify({
+      state: current.state, owner_person_id: current.owner_person_id,
+      data_json: current.data_json, archived: current.archived,
+    });
+    await beginProviderOperation(db, {
+      id: operationId, route, key, requestHash, traceId, actor, resourceRefs, before,
+    });
+    try {
+      const event = await updateCalendarEvent(context.env, providerEventId, {
+        summary: input.summary, start: input.start, end: input.end,
+        recurrence: input.googleRecurrence || [],
+      });
+      if (!event?.id || event.id !== providerEventId || event.status === "cancelled") {
+        throw new Error("Google Calendar returned an invalid update receipt.");
+      }
+      const receipt = `${event.id}:${clean(event.etag, 160) || "confirmed"}`;
+      const data = {
+        id: current.id, summary: input.summary, ...input.storedSchedule,
+        recurrence: input.recurrence, provider_event_id: event.id, state: "active",
+      };
+      const steps = [{
+        name: route.operationId, status: "succeeded", provider_confirmed: true,
+        provider_receipt_ref: receipt, retry_safe: true, error: null,
+      }];
+      const after = JSON.stringify({
+        state: "active", owner_person_id: current.owner_person_id,
+        data_json: JSON.stringify(data), archived: current.archived,
+      });
+      await db.batch([
+        db.prepare(`UPDATE simon_v3_resources SET version = ?, data_json = ?, updated_at = ?
+          WHERE id = ?`).bind(version, JSON.stringify(data), now(), current.id),
+        db.prepare(`UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?,
+          steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?`)
+          .bind(JSON.stringify(resourceRefs), JSON.stringify(steps), after, now(), operationId),
+        eventStatement(db, {
+          traceId, route, actor, resourceId: current.id, operationId, outcome: "succeeded",
+          evidence: { provider: "google_calendar", provider_confirmed: true, receipt },
+        }),
+      ]);
+      const row = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?")
+        .bind(operationId).first();
+      return jsonResponse(operationFromRow(row), 202);
+    } catch (error) {
+      console.error("Simon V3 calendar hold update failed safely", {
+        operationId, error: String(error?.message || error),
+      });
+      await failProviderOperation(db, {
+        id: operationId, route, actor, traceId, resourceId: current.id,
+      });
+      return problem(502, "provider_failure", "Google Calendar did not confirm the hold update", traceId, "The original V3 record was preserved; reconcile the provider event before retry.", { operation_id: operationId });
+    }
+  }
   if (route.operationId === "cancelCalendarHold") {
     if (!current || current.state === "cancelled") {
       return problem(409, "invalid_transition", "Calendar hold is not active", traceId);
@@ -599,7 +744,7 @@ const mutate = async (context, route, actor, traceId) => {
     const supplied = parseVersion(context.request.headers.get("if-match"));
     if (!supplied || supplied !== Number(current?.version)) return problem(409, "version_conflict", "If-Match does not match the current resource version", traceId);
   }
-  if (["createCalendarHold", "cancelCalendarHold"].includes(route.operationId)) {
+  if (["createCalendarHold", "updateCalendarHold", "cancelCalendarHold"].includes(route.operationId)) {
     return mutateCalendarHold(
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );

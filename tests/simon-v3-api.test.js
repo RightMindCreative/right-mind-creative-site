@@ -61,7 +61,10 @@ const statefulCalendarDb = () => {
       });
     } else if (sql.includes("UPDATE simon_v3_resources SET version")) {
       const [version, data_json, updated_at, id] = values;
-      Object.assign(resources.get(id), { version, state: "cancelled", data_json, updated_at });
+      Object.assign(resources.get(id), {
+        version, state: sql.includes("state = 'cancelled'") ? "cancelled" : "active",
+        data_json, updated_at,
+      });
     } else if (sql.includes("INSERT INTO simon_v3_events")) {
       events.push(values);
     }
@@ -288,6 +291,11 @@ test("staging calendar hold create and cancel require confirmed provider receipt
         status: 200, headers: { "content-type": "application/json" },
       });
     }
+    if (options.method === "PATCH") {
+      return new Response(JSON.stringify({ id: createdProviderId, etag: "updated-etag", status: "confirmed" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
     assert.equal(options.method, "DELETE");
     assert.equal(String(url).includes(createdProviderId), true);
     return new Response(null, { status: 204 });
@@ -320,6 +328,23 @@ test("staging calendar hold create and cancel require confirmed provider receipt
   assert.deepEqual(createdPayload.start, { date: "2026-10-20" });
   assert.deepEqual(createdPayload.recurrence, ["RRULE:FREQ=WEEKLY;INTERVAL=2;COUNT=3"]);
 
+  const updateRequest = new Request(`https://preview.example/api/simon/v3/calendar/holds/${holdId}`, {
+    method: "PATCH",
+    headers: headers({
+      "content-type": "application/json", "idempotency-key": "calendar-hold-update-0001",
+      "if-match": "1",
+    }),
+    body: JSON.stringify({
+      actor, reason: "verify provider-backed hold update",
+      data: { summary: "Updated staging verification hold" },
+    }),
+  });
+  const updated = await onRequest(context(updateRequest, env));
+  assert.equal(updated.status, 202);
+  assert.equal((await updated.json()).steps[0].provider_confirmed, true);
+  assert.equal(db.resources.get(holdId).version, 2);
+  assert.equal(JSON.parse(db.resources.get(holdId).data_json).summary, "Updated staging verification hold");
+
   const cancelRequest = new Request(`https://preview.example/api/simon/v3/calendar/holds/${holdId}/cancel`, {
     method: "POST",
     headers: headers({ "content-type": "application/json", "idempotency-key": "calendar-hold-cancel-0001" }),
@@ -329,7 +354,7 @@ test("staging calendar hold create and cancel require confirmed provider receipt
   assert.equal(cancelled.status, 202);
   assert.equal((await cancelled.json()).steps[0].provider_confirmed, true);
   assert.equal(db.resources.get(holdId).state, "cancelled");
-  assert.equal(db.events.length, 4);
+  assert.equal(db.events.length, 6);
 });
 
 test("client actors cannot access the administrative client directory", async () => {
