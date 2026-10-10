@@ -160,7 +160,7 @@ const checkCalendarAvailability = async (context, route, actor, traceId, data) =
     });
   } catch (error) {
     console.error("Simon V3 staging calendar availability failed safely", {
-      error: String(error?.message || error),
+      error_type: clean(error?.name, 80) || "Error",
     });
     await auditRead(context, route, actor, traceId, null, "failed");
     return problem(502, "provider_failure", "Staging calendar did not confirm availability", traceId);
@@ -224,7 +224,7 @@ const getCalendarAgenda = async (context, route, actor, traceId) => {
     });
   } catch (error) {
     console.error("Simon V3 staging calendar agenda failed safely", {
-      error: String(error?.message || error),
+      error_type: clean(error?.name, 80) || "Error",
     });
     await auditRead(context, route, actor, traceId, null, "failed");
     return problem(502, "provider_failure", "Staging calendar did not confirm the agenda", traceId);
@@ -257,7 +257,7 @@ const readSpecial = async (context, route, actor, traceId) => {
       stripe = await getStripeHealth(context.env);
     } catch (error) {
       console.error("Simon V3 staging Stripe health check failed safely", {
-        error: String(error?.message || error),
+        error_type: clean(error?.name, 80) || "Error",
       });
     }
     const items = [
@@ -359,7 +359,7 @@ const stateFor = (operationId, data, current) => ({
   restoreEmployee: "active", createApplicationDraft: "draft", submitApplication: "submitted",
   declineApplication: "declined", cancelBooking: "cancelled", restoreBooking: "confirmed",
   cancelCalendarHold: "cancelled", respondToAssignment: data.response || data.state || "responded",
-}[operationId] || data.state || current || "active");
+}[operationId] || current || "active");
 
 const existingOperation = async (db, key, requestHash, traceId) => {
   const row = await db.prepare("SELECT * FROM simon_v3_operations WHERE idempotency_key = ?").bind(key).first();
@@ -555,7 +555,7 @@ const mutateCalendarHold = async (
       return jsonResponse(operationFromRow(row), 202);
     } catch (error) {
       console.error("Simon V3 calendar hold creation failed safely", {
-        operationId, error: String(error?.message || error),
+        operationId, error_type: clean(error?.name, 80) || "Error",
       });
       try {
         await deleteCalendarEvent(context.env, providerEventId);
@@ -637,7 +637,7 @@ const mutateCalendarHold = async (
       return jsonResponse(operationFromRow(row), 202);
     } catch (error) {
       console.error("Simon V3 calendar hold update failed safely", {
-        operationId, error: String(error?.message || error),
+        operationId, error_type: clean(error?.name, 80) || "Error",
       });
       await failProviderOperation(db, {
         id: operationId, route, actor, traceId, resourceId: current.id,
@@ -689,7 +689,7 @@ const mutateCalendarHold = async (
       return jsonResponse(operationFromRow(row), 202);
     } catch (error) {
       console.error("Simon V3 calendar hold cancellation failed safely", {
-        operationId, error: String(error?.message || error),
+        operationId, error_type: clean(error?.name, 80) || "Error",
       });
       await failProviderOperation(db, {
         id: operationId, route, actor, traceId, resourceId: current.id,
@@ -1831,6 +1831,10 @@ const mutate = async (context, route, actor, traceId) => {
   }
   if (route.provider) return failedProviderOperation(context, route, actor, traceId, idempotencyKey, requestHash);
 
+  if (["kind", "version", "state", "archived"].some((field) => body.data[field] !== undefined)) {
+    return problem(400, "validation_error", "System-managed resource fields cannot be changed directly", traceId);
+  }
+
   const id = targetId || (isUuid(body.data.id) ? body.data.id : crypto.randomUUID());
   const timestamp = now();
   const version = current ? Number(current.version) + 1 : 1;
@@ -1839,6 +1843,7 @@ const mutate = async (context, route, actor, traceId) => {
   const owner = ["admin", "system"].includes(actor.role)
     ? (requestedOwner || current?.owner_person_id || null)
     : (current?.owner_person_id || actor.person_id);
+  if (route.ownerScoped || body.data.owner_person_id !== undefined) data.owner_person_id = owner;
   const state = stateFor(route.operationId, data, current?.state);
   const archived = route.operationId === "archiveClient" ? 1 : route.operationId === "restoreClient" ? 0 : Number(current?.archived || 0);
   const operationId = crypto.randomUUID();
@@ -1904,7 +1909,7 @@ export async function onRequest(context) {
     const special = await readSpecial(context, route, actor, traceId);
     return special || await readResource(context, route, actor, traceId);
   } catch (error) {
-    console.error("Simon V3 request failed safely", { error: String(error?.message || error) });
+    console.error("Simon V3 request failed safely", { error_type: clean(error?.name, 80) || "Error" });
     return problem(503, "provider_failure", "Simon V3 could not verify the operation", suppliedTraceId, "No success was recorded. Retry after checking staging dependencies.");
   }
 }
