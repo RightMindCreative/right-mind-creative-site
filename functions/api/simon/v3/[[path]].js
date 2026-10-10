@@ -2,7 +2,9 @@ import {
   actorMatches, authenticateSimonV3, catalog, hashJson, hasOnlyKeys, isUuid, jsonResponse,
   matchSimonV3Route, operationFromRow, parseVersion, policies, problem, resourceFromRow,
 } from "../../../_lib/simon-v3.js";
-import { calendarIsConfigured, getBusyPeriods } from "../../../_lib/google-calendar.js";
+import {
+  calendarIsConfigured, createCalendarEvent, deleteCalendarEvent, getBusyPeriods,
+} from "../../../_lib/google-calendar.js";
 import { getStripeHealth } from "../../../_lib/stripe.js";
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
@@ -299,6 +301,199 @@ const failedProviderOperation = async (context, route, actor, traceId, key, requ
   return problem(502, "provider_failure", `${route.provider} did not confirm the operation`, traceId, "No provider action was represented as successful.", { operation_id: id });
 };
 
+const calendarHoldInput = (data) => {
+  if (!hasOnlyKeys(data, ["id", "summary", "starts_at", "ends_at"])) {
+    return { error: "Timed calendar hold data contains unsupported fields" };
+  }
+  const id = data.id ? String(data.id) : crypto.randomUUID();
+  const summary = clean(data.summary, 120);
+  const startsAt = new Date(data.starts_at || "");
+  const endsAt = new Date(data.ends_at || "");
+  if (!isUuid(id)) return { error: "Calendar hold id must be a UUID" };
+  if (!summary) return { error: "Calendar hold summary is required" };
+  if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+    return { error: "Calendar hold start and end must be valid ordered timestamps" };
+  }
+  if (endsAt.getTime() - startsAt.getTime() > 31 * 24 * 60 * 60 * 1000) {
+    return { error: "Timed calendar holds cannot exceed 31 days" };
+  }
+  return { id, summary, startsAt, endsAt };
+};
+
+const beginProviderOperation = async (
+  db, { id, route, key, requestHash, traceId, actor, resourceRefs = [], before = null },
+) => {
+  const timestamp = now();
+  const steps = [{
+    name: route.operationId, status: "pending", provider_confirmed: false,
+    provider_receipt_ref: null, retry_safe: false, error: null,
+  }];
+  await db.batch([
+    db.prepare(`INSERT INTO simon_v3_operations
+      (id, action, idempotency_key, request_hash, trace_id, requester_person_id, requester_role,
+       status, resource_refs_json, steps_json, rollback_json, before_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '{"available":false}', ?, ?)`)
+      .bind(id, route.operationId, key, requestHash, traceId, actor.person_id, actor.role,
+        JSON.stringify(resourceRefs), JSON.stringify(steps), before, timestamp),
+    eventStatement(db, {
+      traceId, route, actor, resourceId: resourceRefs[0]?.id || null,
+      operationId: id, outcome: "pending", evidence: { provider: "google_calendar" },
+    }),
+  ]);
+  return timestamp;
+};
+
+const failProviderOperation = async (db, { id, route, actor, traceId, resourceId }) => {
+  const timestamp = now();
+  const steps = [{
+    name: route.operationId, status: "failed", provider_confirmed: false,
+    provider_receipt_ref: null, retry_safe: false,
+    error: { code: "provider_failure", provider: "google_calendar" },
+  }];
+  try {
+    await db.batch([
+      db.prepare(`UPDATE simon_v3_operations
+        SET status = 'failed', steps_json = ?, completed_at = ? WHERE id = ?`)
+        .bind(JSON.stringify(steps), timestamp, id),
+      eventStatement(db, {
+        traceId, route, actor, resourceId, operationId: id, outcome: "failed",
+        evidence: { provider: "google_calendar", provider_confirmed: false },
+      }),
+    ]);
+  } catch {
+    // The durable pending row, if reachable, remains honest and reconcilable.
+  }
+};
+
+const mutateCalendarHold = async (
+  context, route, actor, traceId, key, requestHash, body, current,
+) => {
+  const db = context.env.APPLICATIONS_DB;
+  if (!calendarIsConfigured(context.env)) {
+    return failedProviderOperation(context, route, actor, traceId, key, requestHash);
+  }
+  const operationId = crypto.randomUUID();
+  const timestamp = now();
+  if (route.operationId === "createCalendarHold") {
+    const input = calendarHoldInput(body.data);
+    if (input.error) return problem(400, "validation_error", input.error, traceId);
+    const eventHash = await hashJson({ idempotency_key: key });
+    const providerEventId = `simon${eventHash.slice(0, 48)}`;
+    const resourceRefs = [{ kind: "calendar_hold", id: input.id, version: 1 }];
+    await beginProviderOperation(db, {
+      id: operationId, route, key, requestHash, traceId, actor, resourceRefs,
+    });
+    try {
+      const event = await createCalendarEvent(context.env, {
+        id: providerEventId,
+        summary: input.summary,
+        start: { dateTime: input.startsAt.toISOString(), timeZone: "America/Chicago" },
+        end: { dateTime: input.endsAt.toISOString(), timeZone: "America/Chicago" },
+        transparency: "opaque",
+        extendedProperties: { private: { simonV3ResourceId: input.id, requestHash } },
+      });
+      if (!event?.id || event.id !== providerEventId || event.status === "cancelled") {
+        throw new Error("Google Calendar returned an invalid creation receipt.");
+      }
+      const receipt = `${event.id}:${clean(event.etag, 160) || "confirmed"}`;
+      const data = {
+        id: input.id, summary: input.summary, starts_at: input.startsAt.toISOString(),
+        ends_at: input.endsAt.toISOString(), provider_event_id: event.id, state: "active",
+      };
+      const steps = [{
+        name: route.operationId, status: "succeeded", provider_confirmed: true,
+        provider_receipt_ref: receipt, retry_safe: true, error: null,
+      }];
+      const after = JSON.stringify({
+        state: "active", owner_person_id: actor.person_id,
+        data_json: JSON.stringify(data), archived: 0,
+      });
+      await db.batch([
+        db.prepare(`INSERT INTO simon_v3_resources
+          (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+          VALUES (?, 'calendar_hold', 1, 'active', ?, ?, 0, ?, ?)`)
+          .bind(input.id, actor.person_id, JSON.stringify(data), timestamp, timestamp),
+        db.prepare(`UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?,
+          steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?`)
+          .bind(JSON.stringify(resourceRefs), JSON.stringify(steps), after, now(), operationId),
+        eventStatement(db, {
+          traceId, route, actor, resourceId: input.id, operationId, outcome: "succeeded",
+          evidence: { provider: "google_calendar", provider_confirmed: true, receipt },
+        }),
+      ]);
+      const row = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?")
+        .bind(operationId).first();
+      return jsonResponse(operationFromRow(row), 202);
+    } catch (error) {
+      console.error("Simon V3 calendar hold creation failed safely", {
+        operationId, error: String(error?.message || error),
+      });
+      try {
+        await deleteCalendarEvent(context.env, providerEventId);
+      } catch {
+        // The deterministic provider ID remains available for reconciliation.
+      }
+      await failProviderOperation(db, {
+        id: operationId, route, actor, traceId, resourceId: input.id,
+      });
+      return problem(502, "provider_failure", "Google Calendar did not confirm the hold", traceId, "No calendar hold was represented as successful.", { operation_id: operationId });
+    }
+  }
+  if (route.operationId === "cancelCalendarHold") {
+    if (!current || current.state === "cancelled") {
+      return problem(409, "invalid_transition", "Calendar hold is not active", traceId);
+    }
+    const currentData = JSON.parse(current.data_json);
+    const providerEventId = clean(currentData.provider_event_id, 1024);
+    if (!providerEventId) return problem(409, "invalid_transition", "Calendar hold lacks provider evidence", traceId);
+    const resourceRefs = [{ kind: "calendar_hold", id: current.id, version: Number(current.version) + 1 }];
+    const before = JSON.stringify({
+      state: current.state, owner_person_id: current.owner_person_id,
+      data_json: current.data_json, archived: current.archived,
+    });
+    await beginProviderOperation(db, {
+      id: operationId, route, key, requestHash, traceId, actor, resourceRefs, before,
+    });
+    try {
+      const receipt = await deleteCalendarEvent(context.env, providerEventId);
+      const data = { ...currentData, state: "cancelled" };
+      const steps = [{
+        name: route.operationId, status: "succeeded", provider_confirmed: true,
+        provider_receipt_ref: `${providerEventId}:${receipt.status}`,
+        retry_safe: true, error: null,
+      }];
+      const after = JSON.stringify({
+        state: "cancelled", owner_person_id: current.owner_person_id,
+        data_json: JSON.stringify(data), archived: current.archived,
+      });
+      await db.batch([
+        db.prepare(`UPDATE simon_v3_resources SET version = ?, state = 'cancelled',
+          data_json = ?, updated_at = ? WHERE id = ?`)
+          .bind(Number(current.version) + 1, JSON.stringify(data), now(), current.id),
+        db.prepare(`UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?,
+          steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?`)
+          .bind(JSON.stringify(resourceRefs), JSON.stringify(steps), after, now(), operationId),
+        eventStatement(db, {
+          traceId, route, actor, resourceId: current.id, operationId, outcome: "succeeded",
+          evidence: { provider: "google_calendar", provider_confirmed: true, action: "deleted" },
+        }),
+      ]);
+      const row = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?")
+        .bind(operationId).first();
+      return jsonResponse(operationFromRow(row), 202);
+    } catch (error) {
+      console.error("Simon V3 calendar hold cancellation failed safely", {
+        operationId, error: String(error?.message || error),
+      });
+      await failProviderOperation(db, {
+        id: operationId, route, actor, traceId, resourceId: current.id,
+      });
+      return problem(502, "provider_failure", "Google Calendar did not confirm hold cancellation", traceId, "The operation requires reconciliation before retry.", { operation_id: operationId });
+    }
+  }
+  return failedProviderOperation(context, route, actor, traceId, key, requestHash);
+};
+
 const rollback = async (context, route, actor, traceId, key, requestHash) => {
   const db = context.env.APPLICATIONS_DB;
   const source = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(route.params.operation_id).first();
@@ -360,6 +555,11 @@ const mutate = async (context, route, actor, traceId) => {
   if (route.ifMatch) {
     const supplied = parseVersion(context.request.headers.get("if-match"));
     if (!supplied || supplied !== Number(current?.version)) return problem(409, "version_conflict", "If-Match does not match the current resource version", traceId);
+  }
+  if (["createCalendarHold", "cancelCalendarHold"].includes(route.operationId)) {
+    return mutateCalendarHold(
+      context, route, actor, traceId, idempotencyKey, requestHash, body, current,
+    );
   }
   if (route.provider) return failedProviderOperation(context, route, actor, traceId, idempotencyKey, requestHash);
 

@@ -33,6 +33,65 @@ const inertDb = () => ({
   async batch() { return []; },
 });
 
+const statefulCalendarDb = () => {
+  const resources = new Map();
+  const operations = new Map();
+  const events = [];
+  const execute = (sql, values) => {
+    if (sql.includes("INSERT INTO simon_v3_operations")) {
+      const [id, action, idempotency_key, request_hash, trace_id,
+        requester_person_id, requester_role, resource_refs_json, steps_json,
+        before_json, created_at] = values;
+      operations.set(id, {
+        id, action, idempotency_key, request_hash, trace_id, requester_person_id,
+        requester_role, status: "pending", resource_refs_json, steps_json,
+        rollback_json: '{"available":false}', before_json, after_json: null,
+        created_at, completed_at: null,
+      });
+    } else if (sql.includes("INSERT INTO simon_v3_resources")) {
+      const [id, owner_person_id, data_json, created_at, updated_at] = values;
+      resources.set(id, {
+        id, kind: "calendar_hold", version: 1, state: "active", owner_person_id,
+        data_json, archived: 0, created_at, updated_at,
+      });
+    } else if (sql.includes("UPDATE simon_v3_operations SET status = 'succeeded'")) {
+      const [resource_refs_json, steps_json, after_json, completed_at, id] = values;
+      Object.assign(operations.get(id), {
+        status: "succeeded", resource_refs_json, steps_json, after_json, completed_at,
+      });
+    } else if (sql.includes("UPDATE simon_v3_resources SET version")) {
+      const [version, data_json, updated_at, id] = values;
+      Object.assign(resources.get(id), { version, state: "cancelled", data_json, updated_at });
+    } else if (sql.includes("INSERT INTO simon_v3_events")) {
+      events.push(values);
+    }
+    return { success: true };
+  };
+  return {
+    resources, operations, events,
+    prepare(sql) {
+      return {
+        values: [],
+        bind(...values) { this.values = values; return this; },
+        async first() {
+          if (sql.includes("FROM simon_v3_resources")) return resources.get(this.values[0]) || null;
+          if (sql.includes("idempotency_key")) {
+            return [...operations.values()].find((row) => row.idempotency_key === this.values[0]) || null;
+          }
+          if (sql.includes("FROM simon_v3_operations")) return operations.get(this.values[0]) || null;
+          return null;
+        },
+        async all() { return { results: [] }; },
+        async run() { return execute(sql, this.values); },
+      };
+    },
+    async batch(statements) {
+      for (const statement of statements) await statement.run();
+      return statements.map(() => ({ success: true }));
+    },
+  };
+};
+
 const context = (request, env = {}) => ({
   request,
   env: { APPLICATIONS_DB: inertDb(), SIMON_V3_SERVICE_TOKEN: "staging-token", ...env },
@@ -201,6 +260,71 @@ test("dependency health confirms Stripe test mode without exposing account data"
   });
   assert.equal(JSON.stringify(body).includes("123456"), false);
   assert.equal(JSON.stringify(body).includes("private-test-key"), false);
+});
+
+test("staging calendar hold create and cancel require confirmed provider receipts", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const keyPair = await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const privateBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(privateBytes).toString("base64")}\n-----END PRIVATE KEY-----`;
+  let createdProviderId = "";
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      return new Response(JSON.stringify({ access_token: "test-access-token" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    if (options.method === "POST") {
+      const payload = JSON.parse(options.body);
+      createdProviderId = payload.id;
+      return new Response(JSON.stringify({ id: payload.id, etag: "test-etag", status: "confirmed" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    assert.equal(options.method, "DELETE");
+    assert.equal(String(url).includes(createdProviderId), true);
+    return new Response(null, { status: 204 });
+  };
+  const db = statefulCalendarDb();
+  const env = {
+    APPLICATIONS_DB: db,
+    SIMON_V3_SERVICE_TOKEN: "staging-token",
+    GOOGLE_SERVICE_ACCOUNT_EMAIL: "staging@example.test",
+    GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: privateKey,
+    GOOGLE_CALENDAR_ID: "staging-calendar",
+  };
+  const holdId = "44444444-4444-4444-8444-444444444444";
+  const createRequest = new Request("https://preview.example/api/simon/v3/calendar/holds", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "calendar-hold-create-0001" }),
+    body: JSON.stringify({
+      actor, reason: "staging compensation drill",
+      data: {
+        id: holdId, summary: "Simon staging verification hold",
+        starts_at: "2026-10-20T18:00:00.000Z", ends_at: "2026-10-20T18:30:00.000Z",
+      },
+    }),
+  });
+  const created = await onRequest(context(createRequest, env));
+  assert.equal(created.status, 202);
+  assert.equal((await created.json()).steps[0].provider_confirmed, true);
+  assert.equal(db.resources.get(holdId).state, "active");
+
+  const cancelRequest = new Request(`https://preview.example/api/simon/v3/calendar/holds/${holdId}/cancel`, {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "calendar-hold-cancel-0001" }),
+    body: JSON.stringify({ actor, reason: "complete staging compensation drill", data: {} }),
+  });
+  const cancelled = await onRequest(context(cancelRequest, env));
+  assert.equal(cancelled.status, 202);
+  assert.equal((await cancelled.json()).steps[0].provider_confirmed, true);
+  assert.equal(db.resources.get(holdId).state, "cancelled");
+  assert.equal(db.events.length, 4);
 });
 
 test("client actors cannot access the administrative client directory", async () => {
