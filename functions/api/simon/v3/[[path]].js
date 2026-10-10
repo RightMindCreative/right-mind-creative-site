@@ -2,6 +2,7 @@ import {
   actorMatches, authenticateSimonV3, catalog, hashJson, hasOnlyKeys, isUuid, jsonResponse,
   matchSimonV3Route, operationFromRow, parseVersion, policies, problem, resourceFromRow,
 } from "../../../_lib/simon-v3.js";
+import { calendarIsConfigured, getBusyPeriods } from "../../../_lib/google-calendar.js";
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
 const now = () => new Date().toISOString();
@@ -13,13 +14,13 @@ const routeId = (route) => {
   return null;
 };
 
-const eventStatement = (db, { traceId, route, actor, resourceId = null, operationId = null, outcome, evidence = {} }) => db.prepare(`
+const eventStatement = (db, { eventId = crypto.randomUUID(), traceId, route, actor, resourceId = null, operationId = null, outcome, evidence = {} }) => db.prepare(`
   INSERT INTO simon_v3_events
     (id, trace_id, action, requester_person_id, requester_role, resource_kind,
       resource_id, operation_id, outcome, evidence_json, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `).bind(
-  crypto.randomUUID(), traceId, route.operationId, actor.person_id, actor.role, route.kind,
+  eventId, traceId, route.operationId, actor.person_id, actor.role, route.kind,
   resourceId, operationId, outcome, JSON.stringify(evidence), now(),
 );
 
@@ -52,6 +53,111 @@ const loadResource = async (db, id) => db.prepare(`
 
 const auditRead = async (context, route, actor, traceId, resourceId, outcome) => {
   await eventStatement(context.env.APPLICATIONS_DB, { traceId, route, actor, resourceId, outcome }).run();
+};
+
+const parseAvailabilityRequest = (data) => {
+  if (!hasOnlyKeys(data, ["starts_at", "ends_at", "duration_minutes"])) {
+    return { error: "Availability data contains unsupported fields" };
+  }
+  const startsAt = new Date(data.starts_at || "");
+  if (Number.isNaN(startsAt.getTime())) return { error: "starts_at must be an RFC 3339 timestamp" };
+  const hasEnd = typeof data.ends_at === "string" && data.ends_at.length > 0;
+  const hasDuration = data.duration_minutes !== undefined;
+  if (hasEnd === hasDuration) {
+    return { error: "Provide exactly one of ends_at or duration_minutes" };
+  }
+  let endsAt;
+  if (hasDuration) {
+    if (!Number.isInteger(data.duration_minutes)
+        || data.duration_minutes < 30 || data.duration_minutes > 720
+        || data.duration_minutes % 30 !== 0) {
+      return { error: "duration_minutes must be a 30-minute increment from 30 through 720" };
+    }
+    endsAt = new Date(startsAt.getTime() + data.duration_minutes * 60000);
+  } else {
+    endsAt = new Date(data.ends_at);
+    if (Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+      return { error: "ends_at must be after starts_at" };
+    }
+  }
+  if (endsAt.getTime() - startsAt.getTime() > 12 * 60 * 60 * 1000) {
+    return { error: "Availability checks cannot exceed 12 hours" };
+  }
+  return { startsAt, endsAt };
+};
+
+const centralParts = (date) => Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago", weekday: "short", hour: "2-digit", minute: "2-digit",
+  hourCycle: "h23",
+}).formatToParts(date).map((part) => [part.type, part.value]));
+
+const publicPolicyCheck = (startsAt, endsAt) => {
+  const start = centralParts(startsAt);
+  const end = centralParts(endsAt);
+  const startDay = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(startsAt);
+  const endDay = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(endsAt);
+  const startMinutes = Number(start.hour) * 60 + Number(start.minute);
+  const endMinutes = Number(end.hour) * 60 + Number(end.minute);
+  if (startsAt.getTime() < Date.now() + 48 * 60 * 60 * 1000) {
+    return { eligible: false, reason: "minimum_notice" };
+  }
+  if (start.weekday === "Mon") return { eligible: false, reason: "closed_monday" };
+  if (Number(start.minute) !== 0) return { eligible: false, reason: "hourly_start_required" };
+  if (startDay !== endDay && endMinutes !== 0) return { eligible: false, reason: "ends_after_midnight" };
+  const opensAt = start.weekday === "Sun" ? 13 * 60 : 10 * 60;
+  if (startMinutes < opensAt) return { eligible: false, reason: "before_opening" };
+  if (endsAt <= startsAt || (startDay === endDay && endMinutes <= startMinutes)) {
+    return { eligible: false, reason: "invalid_interval" };
+  }
+  return { eligible: true, reason: null };
+};
+
+const checkCalendarAvailability = async (context, route, actor, traceId, data) => {
+  const parsed = parseAvailabilityRequest(data);
+  if (parsed.error) return problem(400, "validation_error", parsed.error, traceId);
+  if (!calendarIsConfigured(context.env)) {
+    await auditRead(context, route, actor, traceId, null, "failed");
+    return problem(503, "provider_failure", "Staging calendar is not configured", traceId);
+  }
+  try {
+    const busy = await getBusyPeriods(
+      context.env, parsed.startsAt.toISOString(), parsed.endsAt.toISOString(),
+    );
+    const providerBusy = busy.some((period) => (
+      parsed.startsAt < new Date(period.end) && parsed.endsAt > new Date(period.start)
+    ));
+    const policy = publicPolicyCheck(parsed.startsAt, parsed.endsAt);
+    const available = !providerBusy && (actor.role === "admin" || actor.role === "system" || policy.eligible);
+    const evidenceId = crypto.randomUUID();
+    await eventStatement(context.env.APPLICATIONS_DB, {
+      eventId: evidenceId, traceId, route, actor, outcome: "succeeded",
+      evidence: {
+        provider: "google_calendar", provider_confirmed: true,
+        result: providerBusy ? "busy" : "free", private_fields_exposed: false,
+      },
+    }).run();
+    return jsonResponse({
+      items: [{
+        id: crypto.randomUUID(), kind: "availability", version: 1,
+        data: {
+          starts_at: parsed.startsAt.toISOString(), ends_at: parsed.endsAt.toISOString(),
+          available, policy_eligible: policy.eligible, policy_reason: policy.reason,
+        },
+        evidence_refs: [evidenceId],
+      }],
+      next_cursor: null,
+    });
+  } catch (error) {
+    console.error("Simon V3 staging calendar availability failed safely", {
+      error: String(error?.message || error),
+    });
+    await auditRead(context, route, actor, traceId, null, "failed");
+    return problem(502, "provider_failure", "Staging calendar did not confirm availability", traceId);
+  }
 };
 
 const readSpecial = async (context, route, actor, traceId) => {
@@ -276,6 +382,9 @@ const query = async (context, route, actor, traceId) => {
     && hasOnlyKeys(parsed.value?.actor, ["person_id", "role", "authority_grant_id"]);
   if (!bodyShapeIsValid || !actorMatches(actor, parsed.value?.actor) || !parsed.value?.data || typeof parsed.value.data !== "object" || Array.isArray(parsed.value.data)) {
     return problem(400, "validation_error", "Query actor and data are required and must match the authenticated actor", traceId);
+  }
+  if (route.operationId === "checkAvailability") {
+    return checkCalendarAvailability(context, route, actor, traceId, parsed.value.data);
   }
   if (route.provider) {
     await auditRead(context, route, actor, traceId, null, "failed");

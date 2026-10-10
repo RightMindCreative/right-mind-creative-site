@@ -118,6 +118,66 @@ test("provider-backed operations never return false success without a receipt", 
   assert.equal(typeof body.operation_id, "string");
 });
 
+test("staging calendar availability returns only busy-safe fields with evidence", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const keyPair = await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["sign", "verify"],
+  );
+  const privateBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(privateBytes).toString("base64")}\n-----END PRIVATE KEY-----`;
+  let requests = 0;
+  globalThis.fetch = async (url) => {
+    requests += 1;
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      return new Response(JSON.stringify({ access_token: "test-access-token" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    assert.equal(String(url), "https://www.googleapis.com/calendar/v3/freeBusy");
+    return new Response(JSON.stringify({
+      calendars: { "staging-calendar": { busy: [] } },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const request = new Request("https://preview.example/api/simon/v3/calendar/availability", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      actor,
+      data: { starts_at: "2026-10-13T15:00:00.000Z", duration_minutes: 120 },
+    }),
+  });
+  const response = await onRequest(context(request, {
+    GOOGLE_SERVICE_ACCOUNT_EMAIL: "staging@example.test",
+    GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: privateKey,
+    GOOGLE_CALENDAR_ID: "staging-calendar",
+  }));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(requests, 2);
+  assert.equal(body.items.length, 1);
+  assert.deepEqual(Object.keys(body.items[0].data).sort(), [
+    "available", "ends_at", "policy_eligible", "policy_reason", "starts_at",
+  ]);
+  assert.equal(body.items[0].data.available, true);
+  assert.equal(body.items[0].evidence_refs.length, 1);
+  assert.equal(JSON.stringify(body).includes("summary"), false);
+  assert.equal(JSON.stringify(body).includes("attendee"), false);
+});
+
+test("staging calendar availability validates the complete interval before provider access", async () => {
+  const request = new Request("https://preview.example/api/simon/v3/calendar/availability", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json" }),
+    body: JSON.stringify({ actor, data: { starts_at: "2026-10-13T15:00:00.000Z" } }),
+  });
+  const response = await onRequest(context(request));
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, "validation_error");
+});
+
 test("client actors cannot access the administrative client directory", async () => {
   const request = new Request("https://preview.example/api/simon/v3/clients", {
     headers: headers({ "x-simon-role": "client" }),
