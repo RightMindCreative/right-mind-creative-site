@@ -395,7 +395,7 @@ test("client actors cannot create bookings directly", async () => {
   assert.equal((await response.json()).code, "forbidden");
 });
 
-test("admin booking create, edit, reschedule, cancel, and restore require Google receipts", async (t) => {
+test("admin booking create, edit, reschedule, split, cancel, and restore require Google receipts", async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   const keyPair = await crypto.subtle.generateKey(
@@ -470,18 +470,46 @@ test("admin booking create, edit, reschedule, cancel, and restore require Google
   const updated = await onRequest(context(updateRequest, env));
   assert.equal(updated.status, 202);
   assert.equal(db.resources.get(bookingId).version, 3);
+  const secondBookingId = "66666666-6666-4666-8666-666666666666";
+  const splitRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/split`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json", "idempotency-key": "booking-split-admin-0001",
+      "if-match": "3",
+    }),
+    body: JSON.stringify({ actor, reason: "split synthetic booking", data: {
+      first_duration_minutes: 60, second_duration_minutes: 60,
+      second_starts_at: "2026-10-23T18:00:00Z", second_booking_id: secondBookingId,
+    } }),
+  });
+  const split = await onRequest(context(splitRequest, env));
+  assert.equal(split.status, 202);
+  assert.equal(db.resources.get(bookingId).version, 4);
+  assert.equal(db.resources.get(secondBookingId).version, 1);
+  assert.equal(JSON.parse(db.resources.get(secondBookingId).data_json).payment_ledger_booking_id, bookingId);
   const cancelRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/cancel`, {
     method: "POST",
     headers: headers({
       "content-type": "application/json", "idempotency-key": "booking-cancel-admin-0001",
-      "if-match": "3",
+      "if-match": "4",
     }),
     body: JSON.stringify({ actor, reason: "cancel synthetic booking", data: {} }),
   });
   const cancelled = await onRequest(context(cancelRequest, env));
   assert.equal(cancelled.status, 202);
   assert.equal(db.resources.get(bookingId).state, "cancelled");
-  assert.equal(db.resources.get(bookingId).version, 4);
+  assert.equal(db.resources.get(bookingId).version, 5);
+  const cancelSecondRequest = new Request(`https://preview.example/api/simon/v3/bookings/${secondBookingId}/cancel`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json", "idempotency-key": "booking-second-cleanup-admin-0001",
+      "if-match": "1",
+    }),
+    body: JSON.stringify({ actor, reason: "clean up second synthetic booking", data: {} }),
+  });
+  const secondCancelled = await onRequest(context(cancelSecondRequest, env));
+  assert.equal(secondCancelled.status, 202);
+  assert.equal(db.resources.get(secondBookingId).state, "cancelled");
   const restoreRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/restore`, {
     method: "POST",
     headers: headers({
@@ -494,19 +522,19 @@ test("admin booking create, edit, reschedule, cancel, and restore require Google
   const restored = await onRequest(context(restoreRequest, env));
   assert.equal(restored.status, 202);
   assert.equal(db.resources.get(bookingId).state, "booked");
-  assert.equal(db.resources.get(bookingId).version, 5);
+  assert.equal(db.resources.get(bookingId).version, 6);
   const cleanupRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/cancel`, {
     method: "POST",
     headers: headers({
       "content-type": "application/json", "idempotency-key": "booking-cleanup-admin-0001",
-      "if-match": "5",
+      "if-match": "6",
     }),
     body: JSON.stringify({ actor, reason: "clean up synthetic booking", data: {} }),
   });
   const cleaned = await onRequest(context(cleanupRequest, env));
   assert.equal(cleaned.status, 202);
   assert.equal(db.resources.get(bookingId).state, "cancelled");
-  assert.equal(db.resources.get(bookingId).version, 6);
-  assert.equal(deleteCount, 2);
+  assert.equal(db.resources.get(bookingId).version, 7);
+  assert.equal(deleteCount, 3);
   assert.equal(providerId.length > 10, true);
 });

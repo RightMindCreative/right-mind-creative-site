@@ -913,6 +913,100 @@ const mutateBooking = async (
       return problem(502, "provider_failure", "Google Calendar did not confirm the reschedule", traceId, "The original V3 booking record was preserved; reconcile the provider before retry.", { operation_id: operationId });
     }
   }
+  if (route.operationId === "splitBooking") {
+    if (!current || current.state === "cancelled") {
+      return problem(409, "invalid_transition", "Cancelled booking requires explicit restoration", traceId);
+    }
+    if (!hasOnlyKeys(body.data, [
+      "first_duration_minutes", "second_starts_at", "second_duration_minutes", "second_booking_id",
+    ])) return problem(400, "validation_error", "Booking split contains unsupported fields", traceId);
+    const currentData = JSON.parse(current.data_json);
+    const originalStart = new Date(currentData.starts_at || "");
+    const originalEnd = new Date(currentData.ends_at || "");
+    const firstMinutes = Number(body.data.first_duration_minutes);
+    const secondMinutes = Number(body.data.second_duration_minutes);
+    const secondStart = new Date(body.data.second_starts_at || "");
+    const originalMinutes = (originalEnd.getTime() - originalStart.getTime()) / 60000;
+    if (!Number.isInteger(firstMinutes) || !Number.isInteger(secondMinutes)
+        || firstMinutes < 30 || secondMinutes < 30
+        || firstMinutes % 30 !== 0 || secondMinutes % 30 !== 0
+        || firstMinutes + secondMinutes !== originalMinutes
+        || Number.isNaN(secondStart.getTime())) {
+      return problem(400, "validation_error", "Split durations must be positive half-hour increments that preserve the original duration", traceId);
+    }
+    const firstEnd = new Date(originalStart.getTime() + firstMinutes * 60000);
+    const secondEnd = new Date(secondStart.getTime() + secondMinutes * 60000);
+    if (secondStart < firstEnd) {
+      return problem(400, "validation_error", "The second booking cannot overlap the first booking", traceId);
+    }
+    const busy = await getBusyPeriods(context.env, secondStart.toISOString(), secondEnd.toISOString());
+    if (busy.some((period) => secondStart < new Date(period.end) && secondEnd > new Date(period.start))) {
+      return problem(409, "invalid_transition", "The complete second booking duration is unavailable", traceId);
+    }
+    const secondId = body.data.second_booking_id ? String(body.data.second_booking_id) : crypto.randomUUID();
+    if (!isUuid(secondId) || await loadResource(db, secondId)) {
+      return problem(409, "invalid_transition", "The second booking identifier is invalid or already exists", traceId);
+    }
+    const firstProviderId = clean(currentData.provider_event_id, 1024);
+    if (!firstProviderId) return problem(409, "invalid_transition", "Booking lacks provider evidence", traceId);
+    const secondProviderId = `simon${(await hashJson({ idempotency_key: key, segment: 2 })).slice(0, 48)}`;
+    const firstVersion = Number(current.version) + 1;
+    const refs = [
+      { kind: "booking", id: current.id, version: firstVersion },
+      { kind: "booking", id: secondId, version: 1 },
+    ];
+    const before = JSON.stringify({ state: current.state, owner_person_id: current.owner_person_id, data_json: current.data_json, archived: current.archived });
+    const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs, before });
+    try {
+      const firstEvent = await updateCalendarEvent(context.env, firstProviderId, {
+        end: { dateTime: firstEnd.toISOString(), timeZone: "America/Chicago" },
+      });
+      if (!firstEvent?.id || firstEvent.id !== firstProviderId || firstEvent.status === "cancelled") throw new Error("Invalid first split receipt.");
+      const secondEvent = await createCalendarEvent(context.env, {
+        id: secondProviderId, summary: `${currentData.summary} (Part 2)`,
+        start: { dateTime: secondStart.toISOString(), timeZone: "America/Chicago" },
+        end: { dateTime: secondEnd.toISOString(), timeZone: "America/Chicago" }, transparency: "opaque",
+        extendedProperties: { private: { simonV3ResourceId: secondId, splitFromBookingId: current.id, requestHash } },
+      });
+      if (!secondEvent?.id || secondEvent.id !== secondProviderId || secondEvent.status === "cancelled") throw new Error("Invalid second split receipt.");
+      const ledgerBookingId = currentData.payment_ledger_booking_id || current.id;
+      const firstData = {
+        ...currentData, ends_at: firstEnd.toISOString(), duration_minutes: firstMinutes,
+        payment_ledger_booking_id: ledgerBookingId, split_child_booking_id: secondId,
+      };
+      const secondData = {
+        ...currentData, id: secondId, summary: `${currentData.summary} (Part 2)`,
+        starts_at: secondStart.toISOString(), ends_at: secondEnd.toISOString(),
+        duration_minutes: secondMinutes, provider_event_id: secondEvent.id,
+        agreed_total_minor: 0, payment_ledger_booking_id: ledgerBookingId,
+        split_parent_booking_id: current.id,
+      };
+      const steps = [
+        { name: "shorten_original_booking", status: "succeeded", provider_confirmed: true, provider_receipt_ref: `${firstEvent.id}:${clean(firstEvent.etag, 160) || "confirmed"}`, retry_safe: true, error: null },
+        { name: "create_second_booking", status: "succeeded", provider_confirmed: true, provider_receipt_ref: `${secondEvent.id}:${clean(secondEvent.etag, 160) || "confirmed"}`, retry_safe: true, error: null },
+      ];
+      await db.batch([
+        db.prepare("UPDATE simon_v3_resources SET version = ?, data_json = ?, updated_at = ? WHERE id = ?").bind(firstVersion, JSON.stringify(firstData), now(), current.id),
+        db.prepare(`INSERT INTO simon_v3_resources
+          (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+          VALUES (?, 'booking', 1, ?, ?, ?, 0, ?, ?)`).bind(secondId, current.state, current.owner_person_id, JSON.stringify(secondData), timestamp, timestamp),
+        db.prepare("UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?, steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?")
+          .bind(JSON.stringify(refs), JSON.stringify(steps), JSON.stringify({ split: true, first: firstData, second: secondData }), now(), operationId),
+        eventStatement(db, { traceId, route, actor, resourceId: current.id, operationId, outcome: "succeeded", evidence: { provider: "google_calendar", provider_confirmed: true, split_booking_id: secondId } }),
+      ]);
+      return jsonResponse(operationFromRow(await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(operationId).first()), 202);
+    } catch (error) {
+      try { await deleteCalendarEvent(context.env, secondProviderId); } catch { /* deterministic reconciliation ID */ }
+      try {
+        await updateCalendarEvent(context.env, firstProviderId, {
+          start: { dateTime: originalStart.toISOString(), timeZone: "America/Chicago" },
+          end: { dateTime: originalEnd.toISOString(), timeZone: "America/Chicago" },
+        });
+      } catch { /* operation remains failed and requires reconciliation */ }
+      await failProviderOperation(db, { id: operationId, route, actor, traceId, resourceId: current.id });
+      return problem(502, "provider_failure", "Google Calendar did not confirm the complete booking split", traceId, "The split was compensated where possible and requires reconciliation before retry.", { operation_id: operationId });
+    }
+  }
   if (route.operationId === "updateBooking") {
     if (!current || current.state === "cancelled") {
       return problem(409, "invalid_transition", "Cancelled booking requires explicit restoration", traceId);
@@ -1058,7 +1152,7 @@ const mutate = async (context, route, actor, traceId) => {
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );
   }
-  if (["createBooking", "updateBooking", "rescheduleBooking", "cancelBooking", "restoreBooking"].includes(route.operationId)) {
+  if (["createBooking", "updateBooking", "rescheduleBooking", "splitBooking", "cancelBooking", "restoreBooking"].includes(route.operationId)) {
     return mutateBooking(
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );
