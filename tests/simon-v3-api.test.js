@@ -409,6 +409,9 @@ test("admin booking create and no-refund cancel require Google receipts", async 
       providerId = JSON.parse(options.body).id;
       return new Response(JSON.stringify({ id: providerId, etag: "booking-etag", status: "confirmed" }), { status: 200 });
     }
+    if (options.method === "PATCH") {
+      return new Response(JSON.stringify({ id: providerId, etag: "reschedule-etag", status: "confirmed" }), { status: 200 });
+    }
     assert.equal(options.method, "DELETE");
     return new Response(null, { status: 204 });
   };
@@ -432,11 +435,24 @@ test("admin booking create and no-refund cancel require Google receipts", async 
   const created = await onRequest(context(createRequest, env));
   assert.equal(created.status, 202);
   assert.equal(db.resources.get(bookingId).state, "booked");
+  const rescheduleRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/reschedule`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json", "idempotency-key": "booking-reschedule-admin-0001",
+      "if-match": "1",
+    }),
+    body: JSON.stringify({ actor, reason: "reschedule synthetic booking", data: {
+      starts_at: "2026-10-21T18:00:00Z", ends_at: "2026-10-21T20:00:00Z",
+    } }),
+  });
+  const rescheduled = await onRequest(context(rescheduleRequest, env));
+  assert.equal(rescheduled.status, 202);
+  assert.equal(db.resources.get(bookingId).version, 2);
   const cancelRequest = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/cancel`, {
     method: "POST",
     headers: headers({
       "content-type": "application/json", "idempotency-key": "booking-cancel-admin-0001",
-      "if-match": "1",
+      "if-match": "2",
     }),
     body: JSON.stringify({ actor, reason: "cancel synthetic booking", data: {} }),
   });
