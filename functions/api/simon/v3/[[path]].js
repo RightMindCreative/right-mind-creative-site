@@ -319,6 +319,15 @@ const readResource = async (context, route, actor, traceId) => {
   if (route.operationId === "findPaymentLinks") {
     return findPaymentLinks(context, route, actor, traceId);
   }
+  if (route.operationId === "getAssignmentReminderState") {
+    return getAssignmentReminderState(context, route, actor, traceId);
+  }
+  if (route.operationId === "getClientScopedView") {
+    return getClientScopedView(context, route, actor, traceId);
+  }
+  if (route.operationId === "getEmployeeSessionView") {
+    return getEmployeeSessionView(context, route, actor, traceId);
+  }
   if (route.provider) {
     await auditRead(context, route, actor, traceId, routeId(route), "failed");
     return problem(502, "provider_failure", `${route.provider} read has no verified staging receipt`, traceId, "No provider result was represented as successful.");
@@ -1157,6 +1166,66 @@ const findPaymentLinks = async (context, route, actor, traceId) => {
   return jsonResponse({ items: (result.results || []).map(resourceFromRow), next_cursor: null });
 };
 
+const getAssignmentReminderState = async (context, route, actor, traceId) => {
+  const db = context.env.APPLICATIONS_DB;
+  const assignment = await loadResource(db, route.params.assignment_id);
+  if (!assignment || assignment.kind !== "assignment") return problem(404, "not_found", "Assignment not found", traceId);
+  if (!canSee(route, actor, assignment)) return problem(403, "forbidden", "The assignment is outside this actor's scope", traceId);
+  const result = await db.prepare(`SELECT * FROM simon_v3_resources
+    WHERE kind = 'notification' AND json_extract(data_json, '$.related_id') = ?
+      AND json_extract(data_json, '$.template') = 'assignment_reminder'
+    ORDER BY created_at DESC LIMIT 25`).bind(assignment.id).all();
+  await auditRead(context, route, actor, traceId, assignment.id, "succeeded");
+  return jsonResponse({ items: (result.results || []).map(resourceFromRow), next_cursor: null });
+};
+
+const getClientScopedView = async (context, route, actor, traceId) => {
+  const db = context.env.APPLICATIONS_DB;
+  const client = await loadResource(db, route.params.client_id);
+  if (!client || client.kind !== "client" || Number(client.archived)) return problem(404, "not_found", "Client not found", traceId);
+  if (!canSee(route, actor, client)) return problem(403, "forbidden", "The client view is outside this actor's scope", traceId);
+  const ownerPersonId = client.owner_person_id || client.id;
+  const related = await db.prepare(`SELECT * FROM simon_v3_resources
+    WHERE owner_person_id = ? AND kind IN ('application', 'booking', 'payment_link')
+      AND archived = 0 ORDER BY updated_at DESC LIMIT 100`).bind(ownerPersonId).all();
+  await auditRead(context, route, actor, traceId, client.id, "succeeded");
+  return jsonResponse({
+    id: client.id, kind: "client_view", version: Number(client.version),
+    data: {
+      client: resourceFromRow(client).data,
+      applications: (related.results || []).filter((row) => row.kind === "application").map(resourceFromRow),
+      bookings: (related.results || []).filter((row) => row.kind === "booking").map(resourceFromRow),
+      payment_links: (related.results || []).filter((row) => row.kind === "payment_link").map(resourceFromRow),
+    }, evidence_refs: [],
+  });
+};
+
+const getEmployeeSessionView = async (context, route, actor, traceId) => {
+  const db = context.env.APPLICATIONS_DB;
+  const employee = await loadResource(db, route.params.employee_id);
+  if (!employee || employee.kind !== "employee" || employee.state === "inactive") return problem(404, "not_found", "Employee not found", traceId);
+  if (!canSee(route, actor, employee)) return problem(403, "forbidden", "The employee view is outside this actor's scope", traceId);
+  const booking = await loadResource(db, route.params.booking_id);
+  if (!booking || booking.kind !== "booking" || booking.state === "cancelled") return problem(404, "not_found", "Booking not found", traceId);
+  const assignmentResult = await db.prepare(`SELECT * FROM simon_v3_resources
+    WHERE kind = 'assignment' AND owner_person_id = ?
+      AND json_extract(data_json, '$.booking_id') = ?
+      AND state IN ('pending', 'accepted') ORDER BY updated_at DESC LIMIT 1`)
+    .bind(employee.id, booking.id).all();
+  const assignment = (assignmentResult.results || [])[0];
+  if (!assignment) return problem(403, "forbidden", "Employee is not assigned to that session", traceId);
+  const data = JSON.parse(booking.data_json);
+  await auditRead(context, route, actor, traceId, booking.id, "succeeded");
+  return jsonResponse({
+    id: booking.id, kind: "employee_session_view", version: Number(booking.version),
+    data: {
+      booking_id: booking.id, service_id: data.service_id, summary: data.summary,
+      starts_at: data.starts_at, ends_at: data.ends_at,
+      session_notes: data.session_notes || null, assignment_state: assignment.state,
+    }, evidence_refs: [],
+  });
+};
+
 const completePaymentOperation = async (db, {
   operationId, route, actor, traceId, refs, steps, after = null, statements = [], resourceId,
 }) => {
@@ -1390,6 +1459,139 @@ const mutatePayment = async (
   return failedProviderOperation(context, route, actor, traceId, key, requestHash);
 };
 
+const notificationWrite = (db, data, owner, timestamp) => db.prepare(`INSERT INTO simon_v3_resources
+  (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+  VALUES (?, 'notification', 1, 'queued', ?, ?, 0, ?, ?)`)
+  .bind(data.id, owner, JSON.stringify(data), timestamp, timestamp);
+
+const mutateNotification = async (
+  context, route, actor, traceId, key, requestHash, body,
+) => {
+  const db = context.env.APPLICATIONS_DB;
+  if (!hasOnlyKeys(body.data, [
+    "id", "recipient_person_id", "audience_role", "channel", "template", "dedupe_key",
+    "related_kind", "related_id", "variables", "deliver_after",
+  ])) return problem(400, "validation_error", "Notification data contains unsupported fields", traceId);
+  const recipient = clean(body.data.recipient_person_id, 36) || null;
+  const audienceRole = clean(body.data.audience_role, 20) || null;
+  const channel = clean(body.data.channel, 20);
+  const template = clean(body.data.template, 100);
+  const dedupeKey = clean(body.data.dedupe_key, 200);
+  const relatedId = clean(body.data.related_id, 36) || null;
+  if ((!recipient && audienceRole !== "admin") || (recipient && !isUuid(recipient))
+      || !["sms", "email"].includes(channel) || !template || dedupeKey.length < 8
+      || (relatedId && !isUuid(relatedId))
+      || (body.data.variables !== undefined && (typeof body.data.variables !== "object" || Array.isArray(body.data.variables)))) {
+    return problem(400, "validation_error", "Notification requires a safe recipient, channel, template, and dedupe key", traceId);
+  }
+  const existing = await db.prepare(`SELECT * FROM simon_v3_resources
+    WHERE kind = 'notification' AND json_extract(data_json, '$.dedupe_key') = ? LIMIT 1`)
+    .bind(dedupeKey).first();
+  const operationId = crypto.randomUUID();
+  if (existing) {
+    const refs = [{ kind: "notification", id: existing.id, version: Number(existing.version) }];
+    await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+    return completePaymentOperation(db, {
+      operationId, route, actor, traceId, refs, resourceId: existing.id,
+      steps: [{ name: "deduplicated_outbox_enqueue", status: "succeeded", provider_confirmed: true, provider_receipt_ref: existing.id, retry_safe: true, error: null }],
+    });
+  }
+  const id = body.data.id && isUuid(body.data.id) ? body.data.id : crypto.randomUUID();
+  const refs = [{ kind: "notification", id, version: 1 }];
+  const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+  const data = {
+    id, recipient_person_id: recipient, audience_role: audienceRole,
+    channel, template, dedupe_key: dedupeKey,
+    related_kind: clean(body.data.related_kind, 50) || null, related_id: relatedId,
+    variables: body.data.variables || {}, deliver_after: body.data.deliver_after || null,
+    state: "queued", attempts: 0, delivered_at: null, provider_receipt: null,
+  };
+  return completePaymentOperation(db, {
+    operationId, route, actor, traceId, refs, resourceId: id,
+    steps: [{ name: "durable_outbox_enqueue", status: "succeeded", provider_confirmed: true, provider_receipt_ref: id, retry_safe: true, error: null }],
+    after: JSON.stringify(data), statements: [notificationWrite(db, data, recipient, timestamp)],
+  });
+};
+
+const mutateAssignment = async (
+  context, route, actor, traceId, key, requestHash, body, current,
+) => {
+  const db = context.env.APPLICATIONS_DB;
+  const operationId = crypto.randomUUID();
+  if (route.operationId === "createAssignment") {
+    if (!hasOnlyKeys(body.data, ["id", "booking_id", "employee_person_id", "notes", "reminder_at"])) {
+      return problem(400, "validation_error", "Assignment data contains unsupported fields", traceId);
+    }
+    const bookingId = clean(body.data.booking_id, 36);
+    const employeeId = clean(body.data.employee_person_id, 36);
+    const booking = isUuid(bookingId) ? await loadResource(db, bookingId) : null;
+    const employee = isUuid(employeeId) ? await loadResource(db, employeeId) : null;
+    if (!booking || booking.kind !== "booking" || booking.state === "cancelled") return problem(404, "not_found", "Active booking not found", traceId);
+    if (!employee || employee.kind !== "employee" || employee.state === "inactive") return problem(404, "not_found", "Active employee not found", traceId);
+    const duplicate = await db.prepare(`SELECT * FROM simon_v3_resources
+      WHERE kind = 'assignment' AND owner_person_id = ?
+        AND json_extract(data_json, '$.booking_id') = ?
+        AND state IN ('pending', 'accepted') LIMIT 1`).bind(employeeId, bookingId).first();
+    if (duplicate) return problem(409, "invalid_transition", "An active assignment already exists", traceId);
+    const id = body.data.id && isUuid(body.data.id) ? body.data.id : crypto.randomUUID();
+    const notificationId = crypto.randomUUID();
+    const refs = [{ kind: "assignment", id, version: 1 }, { kind: "notification", id: notificationId, version: 1 }];
+    const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+    const data = { id, booking_id: bookingId, employee_person_id: employeeId, state: "pending", notes: clean(body.data.notes, 1000) || null, reminder_at: body.data.reminder_at || null };
+    const notification = { id: notificationId, recipient_person_id: employeeId, audience_role: null, channel: "sms", template: "assignment_request", dedupe_key: `assignment-request:${id}:1`, related_kind: "assignment", related_id: id, variables: { booking_id: bookingId }, state: "queued", attempts: 0, delivered_at: null, provider_receipt: null };
+    return completePaymentOperation(db, {
+      operationId, route, actor, traceId, refs, resourceId: id,
+      steps: [
+        { name: "assignment_created", status: "succeeded", provider_confirmed: true, provider_receipt_ref: id, retry_safe: true, error: null },
+        { name: "notification_queued", status: "succeeded", provider_confirmed: true, provider_receipt_ref: notificationId, retry_safe: true, error: null },
+      ],
+      after: JSON.stringify(data),
+      statements: [
+        db.prepare(`INSERT INTO simon_v3_resources (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+          VALUES (?, 'assignment', 1, 'pending', ?, ?, 0, ?, ?)`).bind(id, employeeId, JSON.stringify(data), timestamp, timestamp),
+        notificationWrite(db, notification, employeeId, timestamp),
+      ],
+    });
+  }
+  if (!current || current.kind !== "assignment") return problem(404, "not_found", "Assignment not found", traceId);
+  const currentData = JSON.parse(current.data_json);
+  let state;
+  let template;
+  let recipient = current.owner_person_id;
+  if (route.operationId === "respondToAssignment") {
+    if (!hasOnlyKeys(body.data, ["response"]) || !["accepted", "declined"].includes(body.data.response) || current.state !== "pending") {
+      return problem(409, "invalid_transition", "Pending assignment requires an accepted or declined response", traceId);
+    }
+    state = body.data.response;
+    template = "assignment_response_admin";
+    recipient = null;
+  } else if (route.operationId === "cancelAssignment") {
+    if (!hasOnlyKeys(body.data, []) || !["pending", "accepted"].includes(current.state)) return problem(409, "invalid_transition", "Only an active assignment can be cancelled", traceId);
+    state = "cancelled";
+    template = "assignment_cancelled";
+  } else {
+    return failedProviderOperation(context, route, actor, traceId, key, requestHash);
+  }
+  const notificationId = crypto.randomUUID();
+  const version = Number(current.version) + 1;
+  const refs = [{ kind: "assignment", id: current.id, version }, { kind: "notification", id: notificationId, version: 1 }];
+  const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+  const data = { ...currentData, state, responded_at: route.operationId === "respondToAssignment" ? timestamp : currentData.responded_at || null, cancelled_at: route.operationId === "cancelAssignment" ? timestamp : null };
+  const notification = { id: notificationId, recipient_person_id: recipient, audience_role: recipient ? null : "admin", channel: "sms", template, dedupe_key: `${template}:${current.id}:${version}`, related_kind: "assignment", related_id: current.id, variables: { state }, state: "queued", attempts: 0, delivered_at: null, provider_receipt: null };
+  return completePaymentOperation(db, {
+    operationId, route, actor, traceId, refs, resourceId: current.id,
+    steps: [
+      { name: route.operationId, status: "succeeded", provider_confirmed: true, provider_receipt_ref: current.id, retry_safe: true, error: null },
+      { name: "notification_queued", status: "succeeded", provider_confirmed: true, provider_receipt_ref: notificationId, retry_safe: true, error: null },
+    ],
+    after: JSON.stringify(data),
+    statements: [
+      db.prepare("UPDATE simon_v3_resources SET version = ?, state = ?, data_json = ?, updated_at = ? WHERE id = ?").bind(version, state, JSON.stringify(data), timestamp, current.id),
+      notificationWrite(db, notification, recipient, timestamp),
+    ],
+  });
+};
+
 const rollback = async (context, route, actor, traceId, key, requestHash) => {
   const db = context.env.APPLICATIONS_DB;
   const source = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(route.params.operation_id).first();
@@ -1465,6 +1667,16 @@ const mutate = async (context, route, actor, traceId) => {
   if (["createPaymentLink", "addLedgerEntry", "createRefund", "reconcilePayment"].includes(route.operationId)) {
     return mutatePayment(
       context, route, actor, traceId, idempotencyKey, requestHash, body,
+    );
+  }
+  if (route.operationId === "enqueueNotification") {
+    return mutateNotification(
+      context, route, actor, traceId, idempotencyKey, requestHash, body,
+    );
+  }
+  if (["createAssignment", "respondToAssignment", "cancelAssignment"].includes(route.operationId)) {
+    return mutateAssignment(
+      context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );
   }
   if (route.provider) return failedProviderOperation(context, route, actor, traceId, idempotencyKey, requestHash);

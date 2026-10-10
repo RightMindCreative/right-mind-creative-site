@@ -92,6 +92,18 @@ const statefulCalendarDb = () => {
         values: [],
         bind(...values) { this.values = values; return this; },
         async first() {
+          if (sql.includes("kind = 'notification'") && sql.includes("dedupe_key")) {
+            return [...resources.values()].find((row) => (
+              row.kind === "notification" && JSON.parse(row.data_json).dedupe_key === this.values[0]
+            )) || null;
+          }
+          if (sql.includes("kind = 'assignment'") && sql.includes("booking_id")) {
+            return [...resources.values()].find((row) => (
+              row.kind === "assignment" && row.owner_person_id === this.values[0]
+              && JSON.parse(row.data_json).booking_id === this.values[1]
+              && ["pending", "accepted"].includes(row.state)
+            )) || null;
+          }
           if (sql.includes("json_extract(data_json, '$.stripe_reference')")) {
             return [...resources.values()].find((row) => (
               row.kind === "ledger_entry"
@@ -119,6 +131,11 @@ const statefulCalendarDb = () => {
               return data.booking_id === bookingId && (amount === undefined || data.amount_minor === amount)
                 && (!sql.includes("state = 'unpaid'") || row.state === "unpaid");
             }).slice(0, 25) };
+          }
+          if (sql.includes("kind = 'notification'")) {
+            return { results: [...resources.values()].filter((row) => (
+              row.kind === "notification" && JSON.parse(row.data_json).related_id === this.values[0]
+            )) };
           }
           return { results: [] };
         },
@@ -205,9 +222,9 @@ test("mutations reject undeclared top-level fields", async () => {
 });
 
 test("provider-backed operations never return false success without a receipt", async () => {
-  const request = new Request("https://preview.example/api/simon/v3/notifications", {
+  const request = new Request("https://preview.example/api/simon/v3/files/intakes", {
     method: "POST",
-    headers: headers({ "content-type": "application/json", "idempotency-key": "notification-guard-0001" }),
+    headers: headers({ "content-type": "application/json", "idempotency-key": "file-provider-guard-0001" }),
     body: JSON.stringify({ actor, reason: "test provider guard", data: {} }),
   });
   const response = await onRequest(context(request));
@@ -686,4 +703,59 @@ test("refunds require an exact test-mode Stripe receipt linked to the booking", 
   const ledgerRequest = new Request(`https://preview.example/api/simon/v3/payments/ledgers/${bookingId}`, { headers: headers() });
   const ledger = await onRequest(context(ledgerRequest, env));
   assert.equal((await ledger.json()).data.remaining_minor, 20500);
+});
+
+test("notification outbox deduplicates and assignment responses stay role scoped", async () => {
+  const db = statefulCalendarDb();
+  const timestamp = new Date().toISOString();
+  const bookingId = "99999999-9999-4999-8999-999999999999";
+  const employeeId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  db.resources.set(bookingId, {
+    id: bookingId, kind: "booking", version: 1, state: "booked", owner_person_id: PERSON_ID,
+    archived: 0, created_at: timestamp, updated_at: timestamp,
+    data_json: JSON.stringify({ id: bookingId, summary: "Synthetic assigned session" }),
+  });
+  db.resources.set(employeeId, {
+    id: employeeId, kind: "employee", version: 1, state: "active", owner_person_id: employeeId,
+    archived: 0, created_at: timestamp, updated_at: timestamp,
+    data_json: JSON.stringify({ id: employeeId, name: "Synthetic Engineer" }),
+  });
+  const env = { APPLICATIONS_DB: db, SIMON_V3_SERVICE_TOKEN: "staging-token" };
+  const assignmentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const create = new Request("https://preview.example/api/simon/v3/assignments", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "assignment-create-0001" }),
+    body: JSON.stringify({ actor, reason: "assign synthetic engineer", data: {
+      id: assignmentId, booking_id: bookingId, employee_person_id: employeeId,
+    } }),
+  });
+  assert.equal((await onRequest(context(create, env))).status, 202);
+  assert.equal(db.resources.get(assignmentId).state, "pending");
+  const employeeActor = { person_id: employeeId, role: "employee", authority_grant_id: GRANT_ID };
+  const respond = new Request(`https://preview.example/api/simon/v3/assignments/${assignmentId}/respond`, {
+    method: "POST",
+    headers: {
+      ...headers({ "x-simon-person-id": employeeId, "x-simon-role": "employee" }),
+      "content-type": "application/json", "idempotency-key": "assignment-response-0001",
+    },
+    body: JSON.stringify({ actor: employeeActor, reason: "accept synthetic assignment", data: { response: "accepted" } }),
+  });
+  assert.equal((await onRequest(context(respond, env))).status, 202);
+  assert.equal(db.resources.get(assignmentId).state, "accepted");
+  assert.equal([...db.resources.values()].filter((row) => row.kind === "notification").length, 2);
+
+  const notificationBody = { actor, reason: "queue one deduplicated alert", data: {
+    recipient_person_id: PERSON_ID, channel: "sms", template: "staging_notice",
+    dedupe_key: "staging-notice-one", variables: {},
+  } };
+  for (const key of ["notification-dedupe-0001", "notification-dedupe-0002"]) {
+    const request = new Request("https://preview.example/api/simon/v3/notifications", {
+      method: "POST", headers: headers({ "content-type": "application/json", "idempotency-key": key }),
+      body: JSON.stringify(notificationBody),
+    });
+    assert.equal((await onRequest(context(request, env))).status, 202);
+  }
+  assert.equal([...db.resources.values()].filter((row) => (
+    row.kind === "notification" && JSON.parse(row.data_json).dedupe_key === "staging-notice-one"
+  )).length, 1);
 });
