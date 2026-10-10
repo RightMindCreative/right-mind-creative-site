@@ -51,13 +51,15 @@ const statefulCalendarDb = () => {
     } else if (sql.includes("INSERT INTO simon_v3_resources")) {
       const booking = sql.includes("'booking'");
       const [id, stateOrOwner, ownerOrData, dataOrCreated, createdOrUpdated, maybeUpdated] = values;
-      const state = booking ? stateOrOwner : "active";
+      const literal = sql.match(/VALUES\s*\(\?,\s*'([^']+)',\s*1,\s*'([^']+)'/s);
+      const kind = booking ? "booking" : literal?.[1] || "calendar_hold";
+      const state = booking ? stateOrOwner : literal?.[2] || "active";
       const owner_person_id = booking ? ownerOrData : stateOrOwner;
       const data_json = booking ? dataOrCreated : ownerOrData;
       const created_at = booking ? createdOrUpdated : dataOrCreated;
       const updated_at = booking ? maybeUpdated : createdOrUpdated;
       resources.set(id, {
-        id, kind: booking ? "booking" : "calendar_hold", version: 1, state, owner_person_id,
+        id, kind, version: 1, state, owner_person_id,
         data_json, archived: 0, created_at, updated_at,
       });
     } else if (sql.includes("UPDATE simon_v3_operations SET status = 'succeeded'")) {
@@ -90,6 +92,12 @@ const statefulCalendarDb = () => {
         values: [],
         bind(...values) { this.values = values; return this; },
         async first() {
+          if (sql.includes("json_extract(data_json, '$.stripe_reference')")) {
+            return [...resources.values()].find((row) => (
+              row.kind === "ledger_entry"
+              && JSON.parse(row.data_json).stripe_reference === this.values[0]
+            )) || null;
+          }
           if (sql.includes("FROM simon_v3_resources")) return resources.get(this.values[0]) || null;
           if (sql.includes("idempotency_key")) {
             return [...operations.values()].find((row) => row.idempotency_key === this.values[0]) || null;
@@ -97,7 +105,23 @@ const statefulCalendarDb = () => {
           if (sql.includes("FROM simon_v3_operations")) return operations.get(this.values[0]) || null;
           return null;
         },
-        async all() { return { results: [] }; },
+        async all() {
+          if (sql.includes("kind = 'ledger_entry'")) {
+            return { results: [...resources.values()].filter((row) => (
+              row.kind === "ledger_entry" && JSON.parse(row.data_json).booking_id === this.values[0]
+            )) };
+          }
+          if (sql.includes("kind = 'payment_link'")) {
+            const [owner, bookingId, amount] = this.values;
+            return { results: [...resources.values()].filter((row) => {
+              if (row.kind !== "payment_link" || row.owner_person_id !== owner) return false;
+              const data = JSON.parse(row.data_json);
+              return data.booking_id === bookingId && (amount === undefined || data.amount_minor === amount)
+                && (!sql.includes("state = 'unpaid'") || row.state === "unpaid");
+            }).slice(0, 25) };
+          }
+          return { results: [] };
+        },
         async run() { return execute(sql, this.values); },
       };
     },
@@ -181,10 +205,10 @@ test("mutations reject undeclared top-level fields", async () => {
 });
 
 test("provider-backed operations never return false success without a receipt", async () => {
-  const request = new Request("https://preview.example/api/simon/v3/payments/links", {
+  const request = new Request("https://preview.example/api/simon/v3/notifications", {
     method: "POST",
-    headers: headers({ "content-type": "application/json", "idempotency-key": "payment-link-0001" }),
-    body: JSON.stringify({ actor, reason: "test provider guard", data: { booking_id: PERSON_ID } }),
+    headers: headers({ "content-type": "application/json", "idempotency-key": "notification-guard-0001" }),
+    body: JSON.stringify({ actor, reason: "test provider guard", data: {} }),
   });
   const response = await onRequest(context(request));
   const body = await response.json();
@@ -537,4 +561,129 @@ test("admin booking create, edit, reschedule, split, cancel, and restore require
   assert.equal(db.resources.get(bookingId).version, 7);
   assert.equal(deleteCount, 3);
   assert.equal(providerId.length > 10, true);
+});
+
+test("payment ledger enforces ownership, exact amounts, link receipts, and reconciliation", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let checkoutRequests = 0;
+  let checkoutMetadata = {};
+  globalThis.fetch = async (url, options = {}) => {
+    assert.match(String(url), /api\.stripe\.com\/v1\/checkout\/sessions/);
+    if (options.method === "POST") {
+      checkoutRequests += 1;
+      const form = new URLSearchParams(options.body);
+      checkoutMetadata = {
+        simon_v3_booking_id: form.get("metadata[simon_v3_booking_id]"),
+        simon_v3_payment_link_id: form.get("metadata[simon_v3_payment_link_id]"),
+      };
+      return new Response(JSON.stringify({
+        id: "cs_test_simon_v3", url: "https://checkout.stripe.test/simon-v3",
+        payment_status: "unpaid", status: "open", amount_total: 5000,
+        expires_at: Math.floor(Date.now() / 1000) + 3600, livemode: false,
+        metadata: checkoutMetadata,
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      id: "cs_test_simon_v3", payment_status: "paid", status: "complete",
+      amount_total: 5000, payment_intent: "pi_test_simon_v3", livemode: false,
+      metadata: checkoutMetadata,
+    }), { status: 200 });
+  };
+  const db = statefulCalendarDb();
+  const bookingId = "77777777-7777-4777-8777-777777777777";
+  const timestamp = new Date().toISOString();
+  db.resources.set(bookingId, {
+    id: bookingId, kind: "booking", version: 1, state: "booked",
+    owner_person_id: PERSON_ID, archived: 0, created_at: timestamp, updated_at: timestamp,
+    data_json: JSON.stringify({
+      id: bookingId, owner_person_id: PERSON_ID, agreed_total_minor: 20000,
+      currency: "USD", payment_state: "deposit_waived", booking_state: "booked",
+    }),
+  });
+  const env = { APPLICATIONS_DB: db, SIMON_V3_SERVICE_TOKEN: "staging-token", STRIPE_SECRET_KEY: "sk_test_hidden" };
+  const creditRequest = new Request("https://preview.example/api/simon/v3/payments/ledger-entries", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "ledger-credit-admin-0001" }),
+    body: JSON.stringify({ actor, reason: "exact approved credit", data: {
+      booking_id: bookingId, entry_kind: "credit", amount_minor: 2000, currency: "USD",
+    } }),
+  });
+  assert.equal((await onRequest(context(creditRequest, env))).status, 202);
+  const ledgerRequest = new Request(`https://preview.example/api/simon/v3/payments/ledgers/${bookingId}`, {
+    headers: headers(),
+  });
+  const ledgerResponse = await onRequest(context(ledgerRequest, env));
+  assert.equal(ledgerResponse.status, 200);
+  assert.equal((await ledgerResponse.json()).data.remaining_minor, 18000);
+
+  const clientActor = { ...actor, role: "client" };
+  const clientHeaders = headers({ "x-simon-role": "client" });
+  const partialRequest = new Request("https://preview.example/api/simon/v3/payments/links", {
+    method: "POST",
+    headers: { ...clientHeaders, "content-type": "application/json", "idempotency-key": "client-partial-link-0001" },
+    body: JSON.stringify({ actor: clientActor, reason: "request a partial payment", data: {
+      booking_id: bookingId, amount_minor: 5000,
+    } }),
+  });
+  assert.equal((await onRequest(context(partialRequest, env))).status, 403);
+  assert.equal(checkoutRequests, 0);
+
+  const linkRequest = new Request("https://preview.example/api/simon/v3/payments/links", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "admin-exact-link-0001" }),
+    body: JSON.stringify({ actor, reason: "approved exact installment", data: {
+      booking_id: bookingId, amount_minor: 5000, purpose: "approved installment",
+    } }),
+  });
+  assert.equal((await onRequest(context(linkRequest, env))).status, 202);
+  assert.equal(checkoutRequests, 1);
+  const link = [...db.resources.values()].find((row) => row.kind === "payment_link");
+  assert.ok(link);
+  const reconcileRequest = new Request("https://preview.example/api/simon/v3/payments/reconcile", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "reconcile-paid-link-0001" }),
+    body: JSON.stringify({ actor, reason: "reconcile Stripe receipt", data: { payment_link_id: link.id } }),
+  });
+  assert.equal((await onRequest(context(reconcileRequest, env))).status, 202);
+  assert.equal(db.resources.get(link.id).state, "paid");
+  const finalLedger = await onRequest(context(ledgerRequest, env));
+  assert.equal((await finalLedger.json()).data.remaining_minor, 13000);
+});
+
+test("refunds require an exact test-mode Stripe receipt linked to the booking", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const bookingId = "88888888-8888-4888-8888-888888888888";
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(String(url), "https://api.stripe.com/v1/refunds");
+    assert.equal(options.method, "POST");
+    const form = new URLSearchParams(options.body);
+    return new Response(JSON.stringify({
+      id: "re_test_simon_v3", status: "succeeded", amount: Number(form.get("amount")),
+      payment_intent: form.get("payment_intent"), livemode: false,
+      metadata: { simon_v3_booking_id: form.get("metadata[simon_v3_booking_id]") },
+    }), { status: 200 });
+  };
+  const db = statefulCalendarDb();
+  const timestamp = new Date().toISOString();
+  db.resources.set(bookingId, {
+    id: bookingId, kind: "booking", version: 1, state: "booked",
+    owner_person_id: PERSON_ID, archived: 0, created_at: timestamp, updated_at: timestamp,
+    data_json: JSON.stringify({ id: bookingId, owner_person_id: PERSON_ID, agreed_total_minor: 20000, currency: "USD" }),
+  });
+  const env = { APPLICATIONS_DB: db, SIMON_V3_SERVICE_TOKEN: "staging-token", STRIPE_SECRET_KEY: "sk_test_hidden" };
+  const request = new Request("https://preview.example/api/simon/v3/payments/refunds", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "refund-exact-admin-0001" }),
+    body: JSON.stringify({ actor, reason: "approved partial refund", data: {
+      booking_id: bookingId, payment_intent_id: "pi_test_simon_v3", amount_minor: 500,
+    } }),
+  });
+  assert.equal((await onRequest(context(request, env))).status, 202);
+  const refund = [...db.resources.values()].find((row) => row.kind === "refund");
+  assert.equal(JSON.parse(refund.data_json).stripe_refund_id, "re_test_simon_v3");
+  const ledgerRequest = new Request(`https://preview.example/api/simon/v3/payments/ledgers/${bookingId}`, { headers: headers() });
+  const ledger = await onRequest(context(ledgerRequest, env));
+  assert.equal((await ledger.json()).data.remaining_minor, 20500);
 });

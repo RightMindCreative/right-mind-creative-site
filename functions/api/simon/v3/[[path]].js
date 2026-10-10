@@ -6,7 +6,10 @@ import {
   calendarIsConfigured, createCalendarEvent, deleteCalendarEvent, getBusyPeriods,
   listCalendarEvents, updateCalendarEvent,
 } from "../../../_lib/google-calendar.js";
-import { getStripeHealth } from "../../../_lib/stripe.js";
+import {
+  createSimonPaymentCheckout, createSimonRefund, getSimonCheckout, getSimonRefund,
+  getStripeHealth,
+} from "../../../_lib/stripe.js";
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
 const now = () => new Date().toISOString();
@@ -310,6 +313,12 @@ const readResource = async (context, route, actor, traceId) => {
   if (route.operationId === "getAgenda") {
     return getCalendarAgenda(context, route, actor, traceId);
   }
+  if (route.operationId === "getPaymentLedger") {
+    return getPaymentLedger(context, route, actor, traceId);
+  }
+  if (route.operationId === "findPaymentLinks") {
+    return findPaymentLinks(context, route, actor, traceId);
+  }
   if (route.provider) {
     await auditRead(context, route, actor, traceId, routeId(route), "failed");
     return problem(502, "provider_failure", `${route.provider} read has no verified staging receipt`, traceId, "No provider result was represented as successful.");
@@ -447,7 +456,7 @@ const beginProviderOperation = async (
         JSON.stringify(resourceRefs), JSON.stringify(steps), before, timestamp),
     eventStatement(db, {
       traceId, route, actor, resourceId: resourceRefs[0]?.id || null,
-      operationId: id, outcome: "pending", evidence: { provider: "google_calendar" },
+      operationId: id, outcome: "pending", evidence: { provider: route.provider || "website" },
     }),
   ]);
   return timestamp;
@@ -458,7 +467,7 @@ const failProviderOperation = async (db, { id, route, actor, traceId, resourceId
   const steps = [{
     name: route.operationId, status: "failed", provider_confirmed: false,
     provider_receipt_ref: null, retry_safe: false,
-    error: { code: "provider_failure", provider: "google_calendar" },
+    error: { code: "provider_failure", provider: route.provider || "website" },
   }];
   try {
     await db.batch([
@@ -467,7 +476,7 @@ const failProviderOperation = async (db, { id, route, actor, traceId, resourceId
         .bind(JSON.stringify(steps), timestamp, id),
       eventStatement(db, {
         traceId, route, actor, resourceId, operationId: id, outcome: "failed",
-        evidence: { provider: "google_calendar", provider_confirmed: false },
+        evidence: { provider: route.provider || "website", provider_confirmed: false },
       }),
     ]);
   } catch {
@@ -1085,6 +1094,302 @@ const mutateBooking = async (
   return failedProviderOperation(context, route, actor, traceId, key, requestHash);
 };
 
+const ledgerKinds = new Set([
+  "add_on", "overtime", "discount", "credit", "deposit_payment", "payment", "refund",
+]);
+
+const loadLedger = async (db, bookingId) => {
+  const requested = await loadResource(db, bookingId);
+  if (!requested || requested.kind !== "booking") return null;
+  const requestedData = JSON.parse(requested.data_json);
+  const rootId = clean(requestedData.payment_ledger_booking_id, 36) || requested.id;
+  const booking = rootId === requested.id ? requested : await loadResource(db, rootId);
+  if (!booking || booking.kind !== "booking") return null;
+  const bookingData = JSON.parse(booking.data_json);
+  const result = await db.prepare(`
+    SELECT * FROM simon_v3_resources
+    WHERE kind = 'ledger_entry' AND json_extract(data_json, '$.booking_id') = ?
+    ORDER BY created_at ASC
+  `).bind(rootId).all();
+  const entries = (result.results || []).map((row) => resourceFromRow(row));
+  let remaining = Number(bookingData.agreed_total_minor || 0);
+  for (const entry of entries) {
+    const amount = Number(entry.data.amount_minor || 0);
+    remaining += ["add_on", "overtime", "refund"].includes(entry.data.entry_kind) ? amount : -amount;
+  }
+  return {
+    booking, bookingData, rootId, entries,
+    agreedTotal: Number(bookingData.agreed_total_minor || 0),
+    remaining: Math.max(0, remaining),
+  };
+};
+
+const getPaymentLedger = async (context, route, actor, traceId) => {
+  const ledger = await loadLedger(context.env.APPLICATIONS_DB, route.params.booking_id);
+  if (!ledger) return problem(404, "not_found", "Booking payment ledger not found", traceId);
+  if (!canSee(route, actor, ledger.booking)) return problem(403, "forbidden", "The payment ledger is outside this actor's scope", traceId);
+  await auditRead(context, route, actor, traceId, ledger.rootId, "succeeded");
+  return jsonResponse({
+    id: ledger.rootId, kind: "payment_ledger", version: ledger.entries.length + 1,
+    data: {
+      booking_id: ledger.rootId, client_person_id: ledger.booking.owner_person_id,
+      agreed_total_minor: ledger.agreedTotal, currency: "USD",
+      remaining_minor: ledger.remaining, entries: ledger.entries.map((entry) => entry.data),
+    },
+    evidence_refs: [],
+  });
+};
+
+const findPaymentLinks = async (context, route, actor, traceId) => {
+  const url = new URL(context.request.url);
+  const bookingId = clean(url.searchParams.get("booking_id"), 36);
+  if (!isUuid(bookingId)) return problem(400, "validation_error", "A valid booking_id is required", traceId);
+  const ledger = await loadLedger(context.env.APPLICATIONS_DB, bookingId);
+  if (!ledger) return problem(404, "not_found", "Booking payment ledger not found", traceId);
+  if (!canSee(route, actor, ledger.booking)) return problem(403, "forbidden", "Payment links are outside this actor's scope", traceId);
+  const result = await context.env.APPLICATIONS_DB.prepare(`
+    SELECT * FROM simon_v3_resources
+    WHERE kind = 'payment_link' AND owner_person_id = ?
+      AND json_extract(data_json, '$.booking_id') = ?
+    ORDER BY created_at DESC LIMIT 25
+  `).bind(ledger.booking.owner_person_id, ledger.rootId).all();
+  await auditRead(context, route, actor, traceId, ledger.rootId, "succeeded");
+  return jsonResponse({ items: (result.results || []).map(resourceFromRow), next_cursor: null });
+};
+
+const completePaymentOperation = async (db, {
+  operationId, route, actor, traceId, refs, steps, after = null, statements = [], resourceId,
+}) => {
+  await db.batch([
+    ...statements,
+    db.prepare(`UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?,
+      steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?`)
+      .bind(JSON.stringify(refs), JSON.stringify(steps), after, now(), operationId),
+    eventStatement(db, {
+      traceId, route, actor, resourceId, operationId, outcome: "succeeded",
+      evidence: { provider: route.provider || "website", provider_confirmed: true },
+    }),
+  ]);
+  return jsonResponse(operationFromRow(
+    await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(operationId).first(),
+  ), 202);
+};
+
+const mutatePayment = async (
+  context, route, actor, traceId, key, requestHash, body,
+) => {
+  const db = context.env.APPLICATIONS_DB;
+  const operationId = crypto.randomUUID();
+  if (route.operationId === "createPaymentLink") {
+    if (!hasOnlyKeys(body.data, ["booking_id", "amount_minor", "purpose", "customer_email"])) {
+      return problem(400, "validation_error", "Payment-link data contains unsupported fields", traceId);
+    }
+    const bookingId = clean(body.data.booking_id, 36);
+    const ledger = isUuid(bookingId) ? await loadLedger(db, bookingId) : null;
+    if (!ledger) return problem(404, "not_found", "Booking payment ledger not found", traceId);
+    if (!canSee(route, actor, ledger.booking)) return problem(403, "forbidden", "The payment ledger is outside this actor's scope", traceId);
+    const suppliedAmount = body.data.amount_minor === undefined ? null : Number(body.data.amount_minor);
+    let amount = ledger.remaining;
+    if (["admin", "system"].includes(actor.role)) {
+      if (suppliedAmount !== null) amount = suppliedAmount;
+    } else if (suppliedAmount !== null && suppliedAmount !== ledger.remaining) {
+      return problem(403, "forbidden", "Partial payments require Admin approval", traceId);
+    }
+    if (!Number.isInteger(amount) || amount <= 0) return problem(409, "invalid_transition", "A zero or invalid payment link is forbidden", traceId);
+    const reusable = await db.prepare(`
+      SELECT * FROM simon_v3_resources
+      WHERE kind = 'payment_link' AND owner_person_id = ?
+        AND json_extract(data_json, '$.booking_id') = ?
+        AND json_extract(data_json, '$.amount_minor') = ?
+        AND state = 'unpaid' AND (json_extract(data_json, '$.expires_at') IS NULL
+          OR json_extract(data_json, '$.expires_at') > ?)
+      ORDER BY created_at DESC LIMIT 2
+    `).bind(ledger.booking.owner_person_id, ledger.rootId, amount, now()).all();
+    if ((reusable.results || []).length > 1) {
+      return problem(409, "invalid_transition", "Multiple valid payment links require reconciliation", traceId);
+    }
+    if ((reusable.results || []).length === 1) {
+      const existing = reusable.results[0];
+      const existingData = JSON.parse(existing.data_json);
+      let verified;
+      try {
+        verified = await getSimonCheckout(context.env, existingData.stripe_checkout_session_id);
+      } catch {
+        return problem(502, "provider_failure", "Stripe did not confirm the reusable payment link", traceId);
+      }
+      if (verified.payment_status !== "unpaid" || verified.status !== "open"
+          || Number(verified.amount_total) !== amount
+          || verified.metadata?.simon_v3_booking_id !== ledger.rootId
+          || verified.metadata?.simon_v3_payment_link_id !== existing.id) {
+        return problem(409, "invalid_transition", "Stored payment link must be reconciled before another link is created", traceId);
+      }
+      const refs = [{ kind: "payment_link", id: existing.id, version: Number(existing.version) }];
+      await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+      return completePaymentOperation(db, {
+        operationId, route, actor, traceId, refs, resourceId: existing.id,
+        steps: [{ name: "reuse_valid_unpaid_link", status: "succeeded", provider_confirmed: true, provider_receipt_ref: verified.id, retry_safe: true, error: null }],
+      });
+    }
+    const linkId = crypto.randomUUID();
+    const refs = [{ kind: "payment_link", id: linkId, version: 1 }];
+    const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+    try {
+      const origin = new URL(context.request.url).origin;
+      const expiresAtEpoch = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+      const checkout = await createSimonPaymentCheckout(context.env, {
+        idempotencyKey: key, paymentLinkId: linkId, bookingId: ledger.rootId, amountMinor: amount,
+        customerEmail: clean(body.data.customer_email, 320) || null,
+        description: clean(body.data.purpose, 120) || "Right Mind Creative session payment",
+        successUrl: `${origin}/payment-result?state=success`,
+        cancelUrl: `${origin}/payment-result?state=cancelled`, expiresAt: expiresAtEpoch,
+      });
+      if (!checkout.id || !checkout.url || checkout.payment_status !== "unpaid" || checkout.livemode !== false
+          || Number(checkout.amount_total) !== amount
+          || checkout.metadata?.simon_v3_booking_id !== ledger.rootId
+          || checkout.metadata?.simon_v3_payment_link_id !== linkId) {
+        throw new Error("Stripe returned an invalid test checkout receipt.");
+      }
+      const data = {
+        id: linkId, booking_id: ledger.rootId, client_person_id: ledger.booking.owner_person_id,
+        amount_minor: amount, currency: "USD", purpose: clean(body.data.purpose, 120) || "remaining_balance",
+        state: "unpaid", stripe_checkout_session_id: checkout.id, checkout_url: checkout.url,
+        expires_at: new Date(Number(checkout.expires_at || expiresAtEpoch) * 1000).toISOString(),
+      };
+      return completePaymentOperation(db, {
+        operationId, route, actor, traceId, refs, resourceId: linkId,
+        steps: [{ name: route.operationId, status: "succeeded", provider_confirmed: true, provider_receipt_ref: checkout.id, retry_safe: true, error: null }],
+        after: JSON.stringify(data),
+        statements: [db.prepare(`INSERT INTO simon_v3_resources
+          (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+          VALUES (?, 'payment_link', 1, 'unpaid', ?, ?, 0, ?, ?)`)
+          .bind(linkId, ledger.booking.owner_person_id, JSON.stringify(data), timestamp, timestamp)],
+      });
+    } catch (error) {
+      await failProviderOperation(db, { id: operationId, route, actor, traceId, resourceId: linkId });
+      return problem(502, "provider_failure", "Stripe did not confirm the payment link", traceId, "No payment link was represented as successful.", { operation_id: operationId });
+    }
+  }
+  if (route.operationId === "addLedgerEntry") {
+    if (!hasOnlyKeys(body.data, ["id", "booking_id", "entry_kind", "amount_minor", "stripe_reference", "note", "currency"])) {
+      return problem(400, "validation_error", "Ledger-entry data contains unsupported fields", traceId);
+    }
+    const ledger = isUuid(body.data.booking_id) ? await loadLedger(db, body.data.booking_id) : null;
+    const entryKind = clean(body.data.entry_kind, 40);
+    const amount = Number(body.data.amount_minor);
+    const reference = clean(body.data.stripe_reference, 255) || null;
+    if (!ledger) return problem(404, "not_found", "Booking payment ledger not found", traceId);
+    if (!ledgerKinds.has(entryKind) || !Number.isInteger(amount) || amount <= 0 || (body.data.currency && body.data.currency !== "USD")) {
+      return problem(400, "validation_error", "Ledger entries require a positive exact USD amount and supported kind", traceId);
+    }
+    const stripeKinds = new Set(["deposit_payment", "payment", "refund"]);
+    if (stripeKinds.has(entryKind) && !reference) return problem(400, "validation_error", "Stripe-backed ledger entries require a provider reference", traceId);
+    let receipt = operationId;
+    try {
+      if (["deposit_payment", "payment"].includes(entryKind)) {
+        if (!reference.startsWith("cs_")) throw new Error("Payment receipt must be a Stripe Checkout session.");
+        const checkout = await getSimonCheckout(context.env, reference);
+        if (checkout.payment_status !== "paid" || Number(checkout.amount_total) !== amount
+            || checkout.metadata?.simon_v3_booking_id !== ledger.rootId) throw new Error("Stripe payment receipt is not paid, exact, or linked to this booking.");
+        receipt = checkout.id;
+      } else if (entryKind === "refund") {
+        if (!reference.startsWith("re_")) throw new Error("Refund receipt must be a Stripe refund.");
+        const refund = await getSimonRefund(context.env, reference);
+        if (refund.status !== "succeeded" || Number(refund.amount) !== amount) throw new Error("Stripe refund receipt is not succeeded or exact.");
+        receipt = refund.id;
+      }
+    } catch (error) {
+      return problem(502, "provider_failure", "Stripe did not confirm the ledger entry", traceId);
+    }
+    const entryId = body.data.id && isUuid(body.data.id) ? body.data.id : crypto.randomUUID();
+    const refs = [{ kind: "ledger_entry", id: entryId, version: 1 }];
+    const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+    const data = { id: entryId, booking_id: ledger.rootId, entry_kind: entryKind, amount_minor: amount, currency: "USD", stripe_reference: reference, note: clean(body.data.note, 500) || null };
+    return completePaymentOperation(db, {
+      operationId, route, actor, traceId, refs, resourceId: entryId,
+      steps: [{ name: route.operationId, status: "succeeded", provider_confirmed: true, provider_receipt_ref: receipt, retry_safe: true, error: null }],
+      after: JSON.stringify(data),
+      statements: [db.prepare(`INSERT INTO simon_v3_resources
+        (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+        VALUES (?, 'ledger_entry', 1, 'posted', ?, ?, 0, ?, ?)`)
+        .bind(entryId, ledger.booking.owner_person_id, JSON.stringify(data), timestamp, timestamp)],
+    });
+  }
+  if (route.operationId === "createRefund") {
+    if (!hasOnlyKeys(body.data, ["booking_id", "payment_intent_id", "amount_minor"])) {
+      return problem(400, "validation_error", "Refund data contains unsupported fields", traceId);
+    }
+    const ledger = isUuid(body.data.booking_id) ? await loadLedger(db, body.data.booking_id) : null;
+    const amount = Number(body.data.amount_minor);
+    const paymentIntentId = clean(body.data.payment_intent_id, 255);
+    if (!ledger) return problem(404, "not_found", "Booking payment ledger not found", traceId);
+    if (!Number.isInteger(amount) || amount <= 0 || !paymentIntentId.startsWith("pi_")) return problem(400, "validation_error", "Refund requires an exact positive amount and Stripe payment intent", traceId);
+    const refundId = crypto.randomUUID();
+    const entryId = crypto.randomUUID();
+    const refs = [{ kind: "refund", id: refundId, version: 1 }, { kind: "ledger_entry", id: entryId, version: 1 }];
+    const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+    try {
+      const refund = await createSimonRefund(context.env, { idempotencyKey: key, bookingId: ledger.rootId, paymentIntentId, amountMinor: amount });
+      if (!refund.id || refund.status !== "succeeded" || Number(refund.amount) !== amount
+          || refund.livemode !== false || refund.payment_intent !== paymentIntentId
+          || refund.metadata?.simon_v3_booking_id !== ledger.rootId) throw new Error("Stripe returned an invalid refund receipt.");
+      const refundData = { id: refundId, booking_id: ledger.rootId, amount_minor: amount, currency: "USD", payment_intent_id: paymentIntentId, stripe_refund_id: refund.id, state: "succeeded" };
+      const entryData = { id: entryId, booking_id: ledger.rootId, entry_kind: "refund", amount_minor: amount, currency: "USD", stripe_reference: refund.id };
+      return completePaymentOperation(db, {
+        operationId, route, actor, traceId, refs, resourceId: refundId,
+        steps: [{ name: route.operationId, status: "succeeded", provider_confirmed: true, provider_receipt_ref: refund.id, retry_safe: true, error: null }],
+        after: JSON.stringify(refundData),
+        statements: [
+          db.prepare(`INSERT INTO simon_v3_resources (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+            VALUES (?, 'refund', 1, 'succeeded', ?, ?, 0, ?, ?)`).bind(refundId, ledger.booking.owner_person_id, JSON.stringify(refundData), timestamp, timestamp),
+          db.prepare(`INSERT INTO simon_v3_resources (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+            VALUES (?, 'ledger_entry', 1, 'posted', ?, ?, 0, ?, ?)`).bind(entryId, ledger.booking.owner_person_id, JSON.stringify(entryData), timestamp, timestamp),
+        ],
+      });
+    } catch (error) {
+      await failProviderOperation(db, { id: operationId, route, actor, traceId, resourceId: refundId });
+      return problem(502, "provider_failure", "Stripe did not confirm the refund", traceId, "No refund was represented as successful.", { operation_id: operationId });
+    }
+  }
+  if (route.operationId === "reconcilePayment") {
+    if (!hasOnlyKeys(body.data, ["payment_link_id"]) || !isUuid(body.data.payment_link_id)) return problem(400, "validation_error", "A valid payment_link_id is required", traceId);
+    const link = await loadResource(db, body.data.payment_link_id);
+    if (!link || link.kind !== "payment_link") return problem(404, "not_found", "Payment link not found", traceId);
+    const linkData = JSON.parse(link.data_json);
+    const refs = [{ kind: "payment_link", id: link.id, version: Number(link.version) + 1 }];
+    const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+    try {
+      const checkout = await getSimonCheckout(context.env, linkData.stripe_checkout_session_id);
+      const state = checkout.payment_status === "paid" ? "paid" : checkout.status === "expired" ? "expired" : "unpaid";
+      if (Number(checkout.amount_total) !== Number(linkData.amount_minor)
+          || checkout.metadata?.simon_v3_booking_id !== linkData.booking_id
+          || checkout.metadata?.simon_v3_payment_link_id !== link.id) throw new Error("Stripe receipt did not match the payment link.");
+      const updated = { ...linkData, state, payment_intent_id: checkout.payment_intent || null, reconciled_at: now() };
+      const statements = [db.prepare("UPDATE simon_v3_resources SET version = ?, state = ?, data_json = ?, updated_at = ? WHERE id = ?")
+        .bind(Number(link.version) + 1, state, JSON.stringify(updated), timestamp, link.id)];
+      if (state === "paid") {
+        const existing = await db.prepare(`SELECT id FROM simon_v3_resources WHERE kind = 'ledger_entry'
+          AND json_extract(data_json, '$.stripe_reference') = ? LIMIT 1`).bind(checkout.id).first();
+        if (!existing) {
+          const entryId = crypto.randomUUID();
+          const entryData = { id: entryId, booking_id: linkData.booking_id, entry_kind: "payment", amount_minor: Number(linkData.amount_minor), currency: "USD", stripe_reference: checkout.id };
+          refs.push({ kind: "ledger_entry", id: entryId, version: 1 });
+          statements.push(db.prepare(`INSERT INTO simon_v3_resources (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+            VALUES (?, 'ledger_entry', 1, 'posted', ?, ?, 0, ?, ?)`).bind(entryId, link.owner_person_id, JSON.stringify(entryData), timestamp, timestamp));
+        }
+      }
+      return completePaymentOperation(db, {
+        operationId, route, actor, traceId, refs, resourceId: link.id, statements,
+        steps: [{ name: route.operationId, status: "succeeded", provider_confirmed: true, provider_receipt_ref: checkout.id, retry_safe: true, error: null }],
+        after: JSON.stringify(updated),
+      });
+    } catch (error) {
+      await failProviderOperation(db, { id: operationId, route, actor, traceId, resourceId: link.id });
+      return problem(502, "provider_failure", "Stripe did not confirm payment status", traceId, "Stored payment state was preserved.", { operation_id: operationId });
+    }
+  }
+  return failedProviderOperation(context, route, actor, traceId, key, requestHash);
+};
+
 const rollback = async (context, route, actor, traceId, key, requestHash) => {
   const db = context.env.APPLICATIONS_DB;
   const source = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(route.params.operation_id).first();
@@ -1155,6 +1460,11 @@ const mutate = async (context, route, actor, traceId) => {
   if (["createBooking", "updateBooking", "rescheduleBooking", "splitBooking", "cancelBooking", "restoreBooking"].includes(route.operationId)) {
     return mutateBooking(
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
+    );
+  }
+  if (["createPaymentLink", "addLedgerEntry", "createRefund", "reconcilePayment"].includes(route.operationId)) {
+    return mutatePayment(
+      context, route, actor, traceId, idempotencyKey, requestHash, body,
     );
   }
   if (route.provider) return failedProviderOperation(context, route, actor, traceId, idempotencyKey, requestHash);
