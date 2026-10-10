@@ -225,9 +225,9 @@ test("mutations reject undeclared top-level fields", async () => {
 });
 
 test("provider-backed operations never return false success without a receipt", async () => {
-  const request = new Request("https://preview.example/api/simon/v3/files/intakes", {
+  const request = new Request("https://preview.example/api/simon/v3/clients/merge", {
     method: "POST",
-    headers: headers({ "content-type": "application/json", "idempotency-key": "file-provider-guard-0001" }),
+    headers: headers({ "content-type": "application/json", "idempotency-key": "merge-provider-guard-0001" }),
     body: JSON.stringify({ actor, reason: "test provider guard", data: {} }),
   });
   const response = await onRequest(context(request));
@@ -865,4 +865,58 @@ test("rollback refuses to overwrite a resource changed after the source operatio
   assert.equal(response.status, 409);
   assert.equal((await response.json()).code, "version_conflict");
   assert.equal(db.resources.get(resourceId).version, 2);
+});
+
+test("file intake verifies bytes into private quarantine without claiming a clean scan", async () => {
+  const db = statefulCalendarDb();
+  const timestamp = new Date().toISOString();
+  const bookingId = "12121212-1212-4212-8212-121212121212";
+  const fileId = "13131313-1313-4313-8313-131313131313";
+  db.resources.set(bookingId, {
+    id: bookingId, kind: "booking", version: 1, state: "booked", owner_person_id: PERSON_ID,
+    data_json: JSON.stringify({ id: bookingId, owner_person_id: PERSON_ID }), archived: 0,
+    created_at: timestamp, updated_at: timestamp,
+  });
+  const objects = new Map();
+  const bucket = {
+    async put(key, value, options) {
+      objects.set(key, { value: new Uint8Array(value), options, etag: "private-r2-etag" });
+      return { key, etag: "private-r2-etag" };
+    },
+    async head(key) {
+      const object = objects.get(key);
+      return object ? { size: object.value.byteLength, etag: object.etag } : null;
+    },
+    async delete(key) { objects.delete(key); },
+  };
+  const bytes = new TextEncoder().encode("harmless synthetic staging text");
+  const checksum = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const request = new Request("https://preview.example/api/simon/v3/files/intakes", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "file-quarantine-receipt-0001" }),
+    body: JSON.stringify({ actor, reason: "quarantine a synthetic file", data: {
+      id: fileId, owner_person_id: PERSON_ID, target_record_kind: "booking",
+      target_record_id: bookingId, filename: "synthetic-note.txt", declared_media_type: "text/plain",
+      content_base64: Buffer.from(bytes).toString("base64"), checksum_sha256: checksum,
+    } }),
+  });
+  const env = { APPLICATIONS_DB: db, APPLICATION_UPLOADS: bucket, SIMON_V3_SERVICE_TOKEN: "staging-token" };
+  const response = await onRequest(context(request, env));
+  assert.equal(response.status, 202);
+  const stored = db.resources.get(fileId);
+  assert.equal(stored.state, "quarantined");
+  assert.equal(JSON.parse(stored.data_json).scan_state, "pending");
+  assert.equal(JSON.parse(stored.data_json).usable, false);
+  assert.equal(objects.size, 1);
+
+  const read = new Request(`https://preview.example/api/simon/v3/files/${fileId}`, {
+    headers: headers({ "x-simon-role": "client" }),
+  });
+  const metadata = await onRequest(context(read, env));
+  assert.equal(metadata.status, 200);
+  const body = await metadata.json();
+  assert.equal(body.data.scan_state, "pending");
+  assert.equal(body.data.usable, false);
+  assert.equal("private_storage_ref" in body.data, false);
 });

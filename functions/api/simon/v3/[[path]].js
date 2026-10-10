@@ -328,6 +328,9 @@ const readResource = async (context, route, actor, traceId) => {
   if (route.operationId === "getEmployeeSessionView") {
     return getEmployeeSessionView(context, route, actor, traceId);
   }
+  if (route.operationId === "getFileMetadata") {
+    return getFileMetadata(context, route, actor, traceId);
+  }
   if (route.provider) {
     await auditRead(context, route, actor, traceId, routeId(route), "failed");
     return problem(502, "provider_failure", `${route.provider} read has no verified staging receipt`, traceId, "No provider result was represented as successful.");
@@ -1245,6 +1248,17 @@ const getEmployeeSessionView = async (context, route, actor, traceId) => {
   });
 };
 
+const getFileMetadata = async (context, route, actor, traceId) => {
+  const db = context.env.APPLICATIONS_DB;
+  const row = await loadResource(db, route.params.file_id);
+  if (!row || row.kind !== "file" || Number(row.archived)) return problem(404, "not_found", "File metadata not found", traceId);
+  if (!canSee(route, actor, row)) return problem(403, "forbidden", "The file is outside this actor's scope", traceId);
+  const data = JSON.parse(row.data_json);
+  if (!["admin", "system"].includes(actor.role)) delete data.private_storage_ref;
+  await auditRead(context, route, actor, traceId, row.id, "succeeded");
+  return jsonResponse({ id: row.id, kind: "file", version: Number(row.version), data, evidence_refs: [] });
+};
+
 const completePaymentOperation = async (db, {
   operationId, route, actor, traceId, refs, steps, after = null, statements = [], resourceId,
 }) => {
@@ -1532,6 +1546,108 @@ const mutateNotification = async (
   });
 };
 
+const allowedFileTypes = new Set([
+  "application/msword", "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/zip",
+  "audio/aac", "audio/aiff", "audio/flac", "audio/mp4", "audio/mpeg", "audio/ogg",
+  "audio/wav", "audio/x-aiff", "audio/x-m4a", "audio/x-wav",
+  "image/gif", "image/jpeg", "image/png", "image/webp", "text/plain",
+]);
+const allowedFileExtensions = new Set([
+  "aac", "aif", "aiff", "doc", "docx", "flac", "gif", "jpeg", "jpg", "m4a",
+  "mp3", "mp4", "ogg", "pdf", "png", "txt", "wav", "wave", "webp", "zip",
+]);
+
+const decodeBase64 = (value) => {
+  const source = String(value || "");
+  if (!source || source.length > 36 * 1024 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(source)) return null;
+  try {
+    const binary = atob(source);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+};
+
+const sha256Hex = async (bytes) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+  .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
+const safeFileName = (value) => clean(value, 200).normalize("NFKD")
+  .replace(/[^\w.-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 120);
+
+const mutateFileIntake = async (
+  context, route, actor, traceId, key, requestHash, body,
+) => {
+  const db = context.env.APPLICATIONS_DB;
+  if (!context.env.APPLICATION_UPLOADS) return problem(503, "provider_failure", "Private staging storage is not configured", traceId);
+  if (!hasOnlyKeys(body.data, [
+    "id", "owner_person_id", "target_record_kind", "target_record_id", "filename",
+    "declared_media_type", "content_base64", "checksum_sha256",
+  ])) return problem(400, "validation_error", "File intake data contains unsupported fields", traceId);
+  const id = body.data.id ? String(body.data.id) : crypto.randomUUID();
+  const targetKind = clean(body.data.target_record_kind, 40);
+  const targetId = clean(body.data.target_record_id, 36);
+  const filename = safeFileName(body.data.filename);
+  const mediaType = clean(body.data.declared_media_type, 160).toLowerCase();
+  const extension = filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || "";
+  const expectedHash = clean(body.data.checksum_sha256, 64).toLowerCase();
+  const bytes = decodeBase64(body.data.content_base64);
+  if (!isUuid(id) || !isUuid(targetId) || !["application", "booking", "client"].includes(targetKind)
+      || !filename || !bytes || bytes.byteLength < 1 || bytes.byteLength > 25 * 1024 * 1024
+      || !/^[0-9a-f]{64}$/.test(expectedHash)
+      || !(allowedFileTypes.has(mediaType)
+        || (mediaType === "application/octet-stream" && allowedFileExtensions.has(extension)))) {
+    return problem(400, "validation_error", "File intake requires a supported non-empty file, exact checksum, and record scope", traceId);
+  }
+  const actualHash = await sha256Hex(bytes);
+  if (actualHash !== expectedHash) return problem(400, "validation_error", "File checksum did not match the received bytes", traceId);
+  const target = await loadResource(db, targetId);
+  if (!target || target.kind !== targetKind || Number(target.archived)) return problem(404, "not_found", "Target record not found", traceId);
+  if (actor.role === "client" && target.owner_person_id !== actor.person_id) return problem(403, "forbidden", "The target record is outside this client's scope", traceId);
+  if (actor.role === "employee") {
+    if (target.kind !== "booking") return problem(403, "forbidden", "Employees may attach files only to accepted sessions", traceId);
+    const accepted = await db.prepare(`SELECT id FROM simon_v3_resources
+      WHERE kind = 'assignment' AND owner_person_id = ?
+        AND json_extract(data_json, '$.booking_id') = ? AND state = 'accepted' LIMIT 1`)
+      .bind(actor.person_id, target.id).first();
+    if (!accepted) return problem(403, "forbidden", "An accepted assignment is required", traceId);
+  }
+  const requestedOwner = clean(body.data.owner_person_id, 36);
+  const owner = ["admin", "system"].includes(actor.role)
+    ? (requestedOwner || target.owner_person_id || actor.person_id) : actor.person_id;
+  if (!isUuid(owner)) return problem(400, "validation_error", "File owner must be a person UUID", traceId);
+  const storageKey = `simon-v3/quarantine/${owner}/${id}/${filename}`;
+  const operationId = crypto.randomUUID();
+  const refs = [{ kind: "file", id, version: 1 }];
+  const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+  try {
+    await context.env.APPLICATION_UPLOADS.put(storageKey, bytes, {
+      httpMetadata: { contentType: mediaType },
+      customMetadata: { simonV3FileId: id, targetKind, targetId, checksumSha256: actualHash },
+    });
+    const receipt = await context.env.APPLICATION_UPLOADS.head(storageKey);
+    if (!receipt || Number(receipt.size) !== bytes.byteLength) throw new Error("Private storage receipt did not match received bytes.");
+    const data = {
+      id, owner_person_id: owner, target_record_kind: targetKind, target_record_id: targetId,
+      filename, declared_media_type: mediaType, size_bytes: bytes.byteLength,
+      checksum_sha256: actualHash, private_storage_ref: storageKey,
+      scan_state: "pending", state: "quarantined", usable: false,
+    };
+    return completePaymentOperation(db, {
+      operationId, route, actor, traceId, refs, resourceId: id,
+      steps: [{ name: "private_quarantine_receipt", status: "succeeded", provider_confirmed: true, provider_receipt_ref: clean(receipt.etag, 255) || id, retry_safe: true, error: null }],
+      after: JSON.stringify(data), statements: [db.prepare(`INSERT INTO simon_v3_resources
+        (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+        VALUES (?, 'file', 1, 'quarantined', ?, ?, 0, ?, ?)`)
+        .bind(id, owner, JSON.stringify(data), timestamp, timestamp)],
+    });
+  } catch (error) {
+    try { await context.env.APPLICATION_UPLOADS.delete(storageKey); } catch { /* deterministic private key */ }
+    await failProviderOperation(db, { id: operationId, route, actor, traceId, resourceId: id });
+    return problem(502, "provider_failure", "Private storage did not confirm file quarantine", traceId, "The file was not accepted or marked clean.", { operation_id: operationId });
+  }
+};
+
 const mutateAssignment = async (
   context, route, actor, traceId, key, requestHash, body, current,
 ) => {
@@ -1816,6 +1932,11 @@ const mutate = async (context, route, actor, traceId) => {
   }
   if (route.operationId === "enqueueNotification") {
     return mutateNotification(
+      context, route, actor, traceId, idempotencyKey, requestHash, body,
+    );
+  }
+  if (route.operationId === "createFileIntake") {
+    return mutateFileIntake(
       context, route, actor, traceId, idempotencyKey, requestHash, body,
     );
   }
