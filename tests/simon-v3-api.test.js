@@ -72,10 +72,11 @@ const statefulCalendarDb = () => {
       const [version, stateOrData, dataOrUpdated, updatedOrId, maybeId] = values;
       const id = restoresState ? maybeId : updatedOrId;
       const existing = resources.get(id);
+      const literalState = sql.match(/state = '([^']+)'/s)?.[1];
       Object.assign(existing, {
         version,
-        state: sql.includes("state = 'cancelled'")
-          ? "cancelled"
+        state: literalState
+          ? literalState
           : restoresState ? stateOrData : existing.state,
         data_json: restoresState ? dataOrUpdated : stateOrData,
         updated_at: restoresState ? updatedOrId : dataOrUpdated,
@@ -124,9 +125,11 @@ const statefulCalendarDb = () => {
             )) };
           }
           if (sql.includes("kind = 'payment_link'")) {
-            const [owner, bookingId, amount] = this.values;
+            const ownerScoped = sql.includes("owner_person_id = ?");
+            const [owner, bookingId, amount] = ownerScoped
+              ? this.values : [undefined, this.values[0], undefined];
             return { results: [...resources.values()].filter((row) => {
-              if (row.kind !== "payment_link" || row.owner_person_id !== owner) return false;
+              if (row.kind !== "payment_link" || (ownerScoped && row.owner_person_id !== owner)) return false;
               const data = JSON.parse(row.data_json);
               return data.booking_id === bookingId && (amount === undefined || data.amount_minor === amount)
                 && (!sql.includes("state = 'unpaid'") || row.state === "unpaid");
@@ -758,4 +761,78 @@ test("notification outbox deduplicates and assignment responses stay role scoped
   assert.equal([...db.resources.values()].filter((row) => (
     row.kind === "notification" && JSON.parse(row.data_json).dedupe_key === "staging-notice-one"
   )).length, 1);
+});
+
+test("application submission and deposit approval coordinate calendar, Stripe, and outbox receipts", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const keyPair = await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true, ["sign", "verify"],
+  );
+  const privateBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(privateBytes).toString("base64")}\n-----END PRIVATE KEY-----`;
+  globalThis.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (target.includes("oauth2.googleapis.com/token")) return new Response(JSON.stringify({ access_token: "test" }), { status: 200 });
+    if (target.endsWith("/freeBusy")) return new Response(JSON.stringify({ calendars: { "staging-calendar": { busy: [] } } }), { status: 200 });
+    if (target.endsWith("/expire")) return new Response(JSON.stringify({ id: "cs_test_application_deposit", status: "expired", livemode: false }), { status: 200 });
+    if (target.includes("api.stripe.com/v1/checkout/sessions")) {
+      const form = new URLSearchParams(options.body);
+      return new Response(JSON.stringify({
+        id: "cs_test_application_deposit", url: "https://checkout.stripe.test/deposit",
+        payment_status: "unpaid", status: "open", amount_total: Number(form.get("line_items[0][price_data][unit_amount]")),
+        expires_at: Math.floor(Date.now() / 1000) + 3600, livemode: false,
+        metadata: {
+          simon_v3_booking_id: form.get("metadata[simon_v3_booking_id]"),
+          simon_v3_payment_link_id: form.get("metadata[simon_v3_payment_link_id]"),
+        },
+      }), { status: 200 });
+    }
+    if (options.method === "POST") {
+      const event = JSON.parse(options.body);
+      return new Response(JSON.stringify({ id: event.id, etag: "approval-event", status: "confirmed" }), { status: 200 });
+    }
+    assert.equal(options.method, "DELETE");
+    return new Response(null, { status: 204 });
+  };
+  const db = statefulCalendarDb();
+  const applicationId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const bookingId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const timestamp = new Date().toISOString();
+  db.resources.set(applicationId, {
+    id: applicationId, kind: "application", version: 1, state: "draft", owner_person_id: PERSON_ID,
+    archived: 0, created_at: timestamp, updated_at: timestamp,
+    data_json: JSON.stringify({ id: applicationId, owner_person_id: PERSON_ID, project_description: "Synthetic project" }),
+  });
+  const env = {
+    APPLICATIONS_DB: db, SIMON_V3_SERVICE_TOKEN: "staging-token", STRIPE_SECRET_KEY: "sk_test_hidden",
+    GOOGLE_SERVICE_ACCOUNT_EMAIL: "staging@example.test", GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: privateKey,
+    GOOGLE_CALENDAR_ID: "staging-calendar",
+  };
+  const submit = new Request(`https://preview.example/api/simon/v3/applications/${applicationId}/submit`, {
+    method: "POST", headers: headers({ "content-type": "application/json", "idempotency-key": "application-submit-0001" }),
+    body: JSON.stringify({ actor, reason: "submit synthetic application", data: {} }),
+  });
+  assert.equal((await onRequest(context(submit, env))).status, 202);
+  assert.equal(db.resources.get(applicationId).state, "awaiting_approval");
+  const approve = new Request(`https://preview.example/api/simon/v3/applications/${applicationId}/approve-with-deposit`, {
+    method: "POST", headers: headers({ "content-type": "application/json", "idempotency-key": "application-approve-deposit-0001" }),
+    body: JSON.stringify({ actor, reason: "approve with exact deposit", data: {
+      booking_id: bookingId, summary: "Synthetic approved session", service_id: "vocal-recording",
+      starts_at: "2026-11-20T18:00:00Z", ends_at: "2026-11-20T20:00:00Z",
+      agreed_total_minor: 20000, deposit_amount_minor: 7000, currency: "USD",
+    } }),
+  });
+  const approved = await onRequest(context(approve, env));
+  assert.equal(approved.status, 202);
+  assert.equal(db.resources.get(applicationId).state, "approved");
+  assert.equal(db.resources.get(bookingId).state, "held");
+  assert.equal([...db.resources.values()].filter((row) => row.kind === "payment_link").length, 1);
+  const cleanup = new Request(`https://preview.example/api/simon/v3/bookings/${bookingId}/cancel`, {
+    method: "POST", headers: headers({
+      "content-type": "application/json", "idempotency-key": "application-booking-cleanup-0001", "if-match": "1",
+    }), body: JSON.stringify({ actor, reason: "clean synthetic approved booking", data: {} }),
+  });
+  assert.equal((await onRequest(context(cleanup, env))).status, 202);
 });

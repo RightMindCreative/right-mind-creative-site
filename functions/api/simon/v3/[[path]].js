@@ -8,7 +8,7 @@ import {
 } from "../../../_lib/google-calendar.js";
 import {
   createSimonPaymentCheckout, createSimonRefund, getSimonCheckout, getSimonRefund,
-  getStripeHealth,
+  expireSimonCheckout, getStripeHealth,
 } from "../../../_lib/stripe.js";
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
@@ -822,8 +822,15 @@ const mutateBooking = async (
       return problem(409, "invalid_transition", "Complete the verified Stripe refund before calendar cancellation", traceId);
     }
     const providerEventId = clean(currentData.provider_event_id, 1024);
+    const ledgerBookingId = clean(currentData.payment_ledger_booking_id, 36) || current.id;
+    const unpaidResult = await db.prepare(`SELECT * FROM simon_v3_resources
+      WHERE kind = 'payment_link' AND json_extract(data_json, '$.booking_id') = ?
+        AND state = 'unpaid' ORDER BY created_at ASC`).bind(ledgerBookingId).all();
+    const unpaidLinks = unpaidResult.results || [];
     const version = Number(current.version) + 1;
-    const refs = [{ kind: "booking", id: current.id, version }];
+    const refs = [{ kind: "booking", id: current.id, version }, ...unpaidLinks.map((link) => ({
+      kind: "payment_link", id: link.id, version: Number(link.version) + 1,
+    }))];
     const before = JSON.stringify({
       state: current.state, owner_person_id: current.owner_person_id,
       data_json: current.data_json, archived: current.archived,
@@ -832,14 +839,26 @@ const mutateBooking = async (
       id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs, before,
     });
     try {
+      const steps = [];
+      const linkStatements = [];
+      for (const link of unpaidLinks) {
+        const linkData = JSON.parse(link.data_json);
+        const expired = await expireSimonCheckout(context.env, linkData.stripe_checkout_session_id, `${key}-expire-${link.id}`);
+        if (expired.status !== "expired" || expired.livemode !== false) throw new Error("Stripe did not confirm payment-link expiration.");
+        const cancelledLink = { ...linkData, state: "cancelled", cancelled_at: now() };
+        linkStatements.push(db.prepare("UPDATE simon_v3_resources SET version = ?, state = 'cancelled', data_json = ?, updated_at = ? WHERE id = ?")
+          .bind(Number(link.version) + 1, JSON.stringify(cancelledLink), now(), link.id));
+        steps.push({ name: "expire_payment_link", status: "succeeded", provider_confirmed: true, provider_receipt_ref: expired.id, retry_safe: true, error: null });
+      }
       const receipt = await deleteCalendarEvent(context.env, providerEventId);
       const data = { ...currentData, booking_state: "cancelled" };
-      const steps = [{
+      steps.push({
         name: route.operationId, status: "succeeded", provider_confirmed: true,
         provider_receipt_ref: `${providerEventId}:${receipt.status}`,
         retry_safe: true, error: null,
-      }];
+      });
       await db.batch([
+        ...linkStatements,
         db.prepare(`UPDATE simon_v3_resources SET version = ?, state = 'cancelled', data_json = ?,
           updated_at = ? WHERE id = ?`).bind(version, JSON.stringify(data), now(), current.id),
         db.prepare(`UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?,
@@ -1592,6 +1611,128 @@ const mutateAssignment = async (
   });
 };
 
+const mutateApplicationLifecycle = async (
+  context, route, actor, traceId, key, requestHash, body, current,
+) => {
+  const db = context.env.APPLICATIONS_DB;
+  if (!current || current.kind !== "application") return problem(404, "not_found", "Application not found", traceId);
+  const currentData = JSON.parse(current.data_json);
+  const operationId = crypto.randomUUID();
+  if (route.operationId === "submitApplication") {
+    if (!hasOnlyKeys(body.data, []) || !["draft", "new"].includes(current.state)) return problem(409, "invalid_transition", "Only a draft application can be submitted", traceId);
+    const version = Number(current.version) + 1;
+    const notificationId = crypto.randomUUID();
+    const refs = [{ kind: "application", id: current.id, version }, { kind: "notification", id: notificationId, version: 1 }];
+    const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+    const data = { ...currentData, application_state: "awaiting_approval", submitted_at: timestamp };
+    const notification = { id: notificationId, recipient_person_id: null, audience_role: "admin", channel: "sms", template: "application_submitted_admin", dedupe_key: `application-submitted:${current.id}:${version}`, related_kind: "application", related_id: current.id, variables: { application_id: current.id }, state: "queued", attempts: 0, delivered_at: null, provider_receipt: null };
+    return completePaymentOperation(db, {
+      operationId, route, actor, traceId, refs, resourceId: current.id,
+      steps: [{ name: "application_submitted", status: "succeeded", provider_confirmed: true, provider_receipt_ref: current.id, retry_safe: true, error: null }, { name: "admin_notification_queued", status: "succeeded", provider_confirmed: true, provider_receipt_ref: notificationId, retry_safe: true, error: null }],
+      after: JSON.stringify(data), statements: [
+        db.prepare("UPDATE simon_v3_resources SET version = ?, state = 'awaiting_approval', data_json = ?, updated_at = ? WHERE id = ?").bind(version, JSON.stringify(data), timestamp, current.id),
+        notificationWrite(db, notification, null, timestamp),
+      ],
+    });
+  }
+  if (route.operationId === "declineApplication") {
+    if (!hasOnlyKeys(body.data, ["note"]) || !["submitted", "awaiting_approval"].includes(current.state)) return problem(409, "invalid_transition", "Only an awaiting application can be declined", traceId);
+    const version = Number(current.version) + 1;
+    const notificationId = crypto.randomUUID();
+    const refs = [{ kind: "application", id: current.id, version }, { kind: "notification", id: notificationId, version: 1 }];
+    const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+    const data = { ...currentData, application_state: "declined", decision_note: clean(body.data.note, 1000) || null, decided_at: timestamp };
+    const notification = { id: notificationId, recipient_person_id: current.owner_person_id, audience_role: null, channel: "sms", template: "application_declined", dedupe_key: `application-declined:${current.id}:${version}`, related_kind: "application", related_id: current.id, variables: { application_id: current.id }, state: "queued", attempts: 0, delivered_at: null, provider_receipt: null };
+    return completePaymentOperation(db, {
+      operationId, route, actor, traceId, refs, resourceId: current.id,
+      steps: [{ name: "application_declined", status: "succeeded", provider_confirmed: true, provider_receipt_ref: current.id, retry_safe: true, error: null }, { name: "client_notification_queued", status: "succeeded", provider_confirmed: true, provider_receipt_ref: notificationId, retry_safe: true, error: null }],
+      after: JSON.stringify(data), statements: [
+        db.prepare("UPDATE simon_v3_resources SET version = ?, state = 'declined', data_json = ?, updated_at = ? WHERE id = ?").bind(version, JSON.stringify(data), timestamp, current.id),
+        notificationWrite(db, notification, current.owner_person_id, timestamp),
+      ],
+    });
+  }
+  if (!["approveApplicationWithDeposit", "approveApplicationWithWaiver"].includes(route.operationId)) {
+    return failedProviderOperation(context, route, actor, traceId, key, requestHash);
+  }
+  if (!["submitted", "awaiting_approval"].includes(current.state)) return problem(409, "invalid_transition", "Only an awaiting application can be approved", traceId);
+  const depositRequired = route.operationId === "approveApplicationWithDeposit";
+  const allowed = ["booking_id", "summary", "service_id", "starts_at", "ends_at", "agreed_total_minor", "currency", "customer_email"];
+  if (depositRequired) allowed.push("deposit_amount_minor");
+  if (!hasOnlyKeys(body.data, allowed)) return problem(400, "validation_error", "Application approval data contains unsupported fields", traceId);
+  const bookingInputResult = bookingInput({
+    id: body.data.booking_id, owner_person_id: current.owner_person_id,
+    application_id: current.id, summary: body.data.summary, service_id: body.data.service_id,
+    starts_at: body.data.starts_at, ends_at: body.data.ends_at,
+    payment_state: depositRequired ? "deposit_pending" : "deposit_waived",
+    agreed_total_minor: body.data.agreed_total_minor, currency: body.data.currency,
+  });
+  if (bookingInputResult.error) return problem(400, "validation_error", bookingInputResult.error, traceId);
+  const depositAmount = Number(body.data.deposit_amount_minor);
+  if (depositRequired && (!Number.isInteger(depositAmount) || depositAmount <= 0 || depositAmount > bookingInputResult.total)) {
+    return problem(400, "validation_error", "Deposit approval requires an exact positive amount no greater than the agreed total", traceId);
+  }
+  if (!calendarIsConfigured(context.env)) return problem(503, "provider_failure", "Staging calendar is not configured", traceId);
+  const busy = await getBusyPeriods(context.env, bookingInputResult.startsAt.toISOString(), bookingInputResult.endsAt.toISOString());
+  if (busy.some((period) => bookingInputResult.startsAt < new Date(period.end) && bookingInputResult.endsAt > new Date(period.start))) return problem(409, "invalid_transition", "The complete approved booking duration is unavailable", traceId);
+  if (await loadResource(db, bookingInputResult.id)) return problem(409, "invalid_transition", "Booking identifier already exists", traceId);
+  const providerEventId = `simon${(await hashJson({ idempotency_key: key, provider: "calendar" })).slice(0, 48)}`;
+  const linkId = depositRequired ? crypto.randomUUID() : null;
+  const notificationId = crypto.randomUUID();
+  const appVersion = Number(current.version) + 1;
+  const refs = [{ kind: "application", id: current.id, version: appVersion }, { kind: "booking", id: bookingInputResult.id, version: 1 }, ...(linkId ? [{ kind: "payment_link", id: linkId, version: 1 }] : []), { kind: "notification", id: notificationId, version: 1 }];
+  const timestamp = await beginProviderOperation(db, { id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs });
+  let checkout = null;
+  try {
+    const event = await createCalendarEvent(context.env, {
+      id: providerEventId, summary: bookingInputResult.summary,
+      start: { dateTime: bookingInputResult.startsAt.toISOString(), timeZone: "America/Chicago" },
+      end: { dateTime: bookingInputResult.endsAt.toISOString(), timeZone: "America/Chicago" }, transparency: "opaque",
+      extendedProperties: { private: { simonV3ResourceId: bookingInputResult.id, applicationId: current.id, requestHash } },
+    });
+    if (!event?.id || event.id !== providerEventId || event.status === "cancelled") throw new Error("Invalid approval calendar receipt.");
+    if (depositRequired) {
+      const origin = new URL(context.request.url).origin;
+      const expiresAt = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+      checkout = await createSimonPaymentCheckout(context.env, {
+        idempotencyKey: `${key}-deposit`, paymentLinkId: linkId, bookingId: bookingInputResult.id,
+        amountMinor: depositAmount, customerEmail: clean(body.data.customer_email, 320) || null,
+        description: `Right Mind Creative · ${bookingInputResult.serviceId} deposit`,
+        successUrl: `${origin}/payment-result?state=success`, cancelUrl: `${origin}/payment-result?state=cancelled`, expiresAt,
+      });
+      if (!checkout.id || !checkout.url || checkout.payment_status !== "unpaid" || checkout.livemode !== false
+          || Number(checkout.amount_total) !== depositAmount
+          || checkout.metadata?.simon_v3_booking_id !== bookingInputResult.id
+          || checkout.metadata?.simon_v3_payment_link_id !== linkId) throw new Error("Invalid approval Stripe receipt.");
+    }
+    const bookingData = { id: bookingInputResult.id, owner_person_id: current.owner_person_id, application_id: current.id, summary: bookingInputResult.summary, service_id: bookingInputResult.serviceId, starts_at: bookingInputResult.startsAt.toISOString(), ends_at: bookingInputResult.endsAt.toISOString(), payment_state: bookingInputResult.paymentState, booking_state: bookingInputResult.bookingState, agreed_total_minor: bookingInputResult.total, currency: "USD", provider_event_id: event.id };
+    const appData = { ...currentData, application_state: "approved", booking_id: bookingInputResult.id, approved_at: timestamp, deposit_waived: !depositRequired };
+    const notification = { id: notificationId, recipient_person_id: current.owner_person_id, audience_role: null, channel: "sms", template: depositRequired ? "application_approved_payment_link" : "application_approved_waiver", dedupe_key: `application-approved:${current.id}:${appVersion}`, related_kind: "application", related_id: current.id, variables: { application_id: current.id, booking_id: bookingInputResult.id, payment_link_id: linkId }, state: "queued", attempts: 0, delivered_at: null, provider_receipt: null };
+    const statements = [
+      db.prepare("UPDATE simon_v3_resources SET version = ?, state = 'approved', data_json = ?, updated_at = ? WHERE id = ?").bind(appVersion, JSON.stringify(appData), timestamp, current.id),
+      db.prepare(`INSERT INTO simon_v3_resources (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+        VALUES (?, 'booking', 1, ?, ?, ?, 0, ?, ?)`).bind(bookingInputResult.id, bookingInputResult.bookingState, current.owner_person_id, JSON.stringify(bookingData), timestamp, timestamp),
+      notificationWrite(db, notification, current.owner_person_id, timestamp),
+    ];
+    const steps = [{ name: "calendar_booking_created", status: "succeeded", provider_confirmed: true, provider_receipt_ref: event.id, retry_safe: true, error: null }];
+    if (checkout) {
+      const linkData = { id: linkId, booking_id: bookingInputResult.id, client_person_id: current.owner_person_id, amount_minor: depositAmount, currency: "USD", purpose: "deposit", state: "unpaid", stripe_checkout_session_id: checkout.id, checkout_url: checkout.url, expires_at: new Date(Number(checkout.expires_at) * 1000).toISOString() };
+      statements.push(db.prepare(`INSERT INTO simon_v3_resources (id, kind, version, state, owner_person_id, data_json, archived, created_at, updated_at)
+        VALUES (?, 'payment_link', 1, 'unpaid', ?, ?, 0, ?, ?)`).bind(linkId, current.owner_person_id, JSON.stringify(linkData), timestamp, timestamp));
+      steps.push({ name: "deposit_link_created", status: "succeeded", provider_confirmed: true, provider_receipt_ref: checkout.id, retry_safe: true, error: null });
+    }
+    steps.push({ name: "client_notification_queued", status: "succeeded", provider_confirmed: true, provider_receipt_ref: notificationId, retry_safe: true, error: null });
+    return completePaymentOperation(db, { operationId, route, actor, traceId, refs, steps, resourceId: current.id, statements, after: JSON.stringify(appData) });
+  } catch (error) {
+    try { await deleteCalendarEvent(context.env, providerEventId); } catch { /* deterministic reconciliation ID */ }
+    if (checkout?.id) {
+      try { await expireSimonCheckout(context.env, checkout.id, `${key}-compensate`); } catch { /* failed operation requires reconciliation */ }
+    }
+    await failProviderOperation(db, { id: operationId, route, actor, traceId, resourceId: current.id });
+    return problem(502, "provider_failure", "Providers did not confirm the complete application approval", traceId, "The approval was compensated where possible and requires reconciliation before retry.", { operation_id: operationId });
+  }
+};
+
 const rollback = async (context, route, actor, traceId, key, requestHash) => {
   const db = context.env.APPLICATIONS_DB;
   const source = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(route.params.operation_id).first();
@@ -1676,6 +1817,11 @@ const mutate = async (context, route, actor, traceId) => {
   }
   if (["createAssignment", "respondToAssignment", "cancelAssignment"].includes(route.operationId)) {
     return mutateAssignment(
+      context, route, actor, traceId, idempotencyKey, requestHash, body, current,
+    );
+  }
+  if (["submitApplication", "approveApplicationWithDeposit", "approveApplicationWithWaiver", "declineApplication"].includes(route.operationId)) {
+    return mutateApplicationLifecycle(
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );
   }
