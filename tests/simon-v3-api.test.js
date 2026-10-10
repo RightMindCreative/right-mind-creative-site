@@ -273,6 +273,7 @@ test("staging calendar hold create and cancel require confirmed provider receipt
   const privateBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
   const privateKey = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(privateBytes).toString("base64")}\n-----END PRIVATE KEY-----`;
   let createdProviderId = "";
+  let createdPayload = null;
   globalThis.fetch = async (url, options = {}) => {
     if (String(url).includes("oauth2.googleapis.com/token")) {
       return new Response(JSON.stringify({ access_token: "test-access-token" }), {
@@ -281,6 +282,7 @@ test("staging calendar hold create and cancel require confirmed provider receipt
     }
     if (options.method === "POST") {
       const payload = JSON.parse(options.body);
+      createdPayload = payload;
       createdProviderId = payload.id;
       return new Response(JSON.stringify({ id: payload.id, etag: "test-etag", status: "confirmed" }), {
         status: 200, headers: { "content-type": "application/json" },
@@ -306,7 +308,8 @@ test("staging calendar hold create and cancel require confirmed provider receipt
       actor, reason: "staging compensation drill",
       data: {
         id: holdId, summary: "Simon staging verification hold",
-        starts_at: "2026-10-20T18:00:00.000Z", ends_at: "2026-10-20T18:30:00.000Z",
+        start_date: "2026-10-20", end_date: "2026-10-21",
+        recurrence: { frequency: "weekly", interval: 2, count: 3 },
       },
     }),
   });
@@ -314,6 +317,8 @@ test("staging calendar hold create and cancel require confirmed provider receipt
   assert.equal(created.status, 202);
   assert.equal((await created.json()).steps[0].provider_confirmed, true);
   assert.equal(db.resources.get(holdId).state, "active");
+  assert.deepEqual(createdPayload.start, { date: "2026-10-20" });
+  assert.deepEqual(createdPayload.recurrence, ["RRULE:FREQ=WEEKLY;INTERVAL=2;COUNT=3"]);
 
   const cancelRequest = new Request(`https://preview.example/api/simon/v3/calendar/holds/${holdId}/cancel`, {
     method: "POST",

@@ -302,22 +302,64 @@ const failedProviderOperation = async (context, route, actor, traceId, key, requ
 };
 
 const calendarHoldInput = (data) => {
-  if (!hasOnlyKeys(data, ["id", "summary", "starts_at", "ends_at"])) {
-    return { error: "Timed calendar hold data contains unsupported fields" };
+  if (!hasOnlyKeys(data, ["id", "summary", "starts_at", "ends_at", "start_date", "end_date", "recurrence"])) {
+    return { error: "Calendar hold data contains unsupported fields" };
   }
   const id = data.id ? String(data.id) : crypto.randomUUID();
   const summary = clean(data.summary, 120);
-  const startsAt = new Date(data.starts_at || "");
-  const endsAt = new Date(data.ends_at || "");
   if (!isUuid(id)) return { error: "Calendar hold id must be a UUID" };
   if (!summary) return { error: "Calendar hold summary is required" };
-  if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
-    return { error: "Calendar hold start and end must be valid ordered timestamps" };
+  const timed = Boolean(data.starts_at || data.ends_at);
+  const allDay = Boolean(data.start_date || data.end_date);
+  if (timed === allDay) return { error: "Provide either timed or all-day hold dates" };
+  let start;
+  let end;
+  let storedSchedule;
+  if (timed) {
+    const startsAt = new Date(data.starts_at || "");
+    const endsAt = new Date(data.ends_at || "");
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+      return { error: "Calendar hold start and end must be valid ordered timestamps" };
+    }
+    if (endsAt.getTime() - startsAt.getTime() > 31 * 24 * 60 * 60 * 1000) {
+      return { error: "Timed calendar holds cannot exceed 31 days" };
+    }
+    start = { dateTime: startsAt.toISOString(), timeZone: "America/Chicago" };
+    end = { dateTime: endsAt.toISOString(), timeZone: "America/Chicago" };
+    storedSchedule = { starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString() };
+  } else {
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    if (!datePattern.test(String(data.start_date || ""))
+        || !datePattern.test(String(data.end_date || ""))
+        || data.end_date <= data.start_date) {
+      return { error: "All-day hold dates must be ordered YYYY-MM-DD values with an exclusive end" };
+    }
+    const span = Date.parse(`${data.end_date}T00:00:00Z`) - Date.parse(`${data.start_date}T00:00:00Z`);
+    if (!Number.isFinite(span) || span > 366 * 24 * 60 * 60 * 1000) {
+      return { error: "All-day calendar holds cannot exceed 366 days" };
+    }
+    start = { date: data.start_date };
+    end = { date: data.end_date };
+    storedSchedule = { start_date: data.start_date, end_date: data.end_date };
   }
-  if (endsAt.getTime() - startsAt.getTime() > 31 * 24 * 60 * 60 * 1000) {
-    return { error: "Timed calendar holds cannot exceed 31 days" };
+  let recurrence = null;
+  let googleRecurrence;
+  if (data.recurrence !== undefined) {
+    if (!hasOnlyKeys(data.recurrence, ["frequency", "interval", "count"])) {
+      return { error: "Calendar hold recurrence contains unsupported fields" };
+    }
+    const frequency = clean(data.recurrence.frequency, 16).toUpperCase();
+    const interval = Number(data.recurrence.interval || 1);
+    const count = Number(data.recurrence.count);
+    if (!["DAILY", "WEEKLY", "MONTHLY"].includes(frequency)
+        || !Number.isInteger(interval) || interval < 1 || interval > 12
+        || !Number.isInteger(count) || count < 2 || count > 52) {
+      return { error: "Recurrence requires DAILY, WEEKLY, or MONTHLY with safe interval and count" };
+    }
+    recurrence = { frequency: frequency.toLowerCase(), interval, count };
+    googleRecurrence = [`RRULE:FREQ=${frequency};INTERVAL=${interval};COUNT=${count}`];
   }
-  return { id, summary, startsAt, endsAt };
+  return { id, summary, start, end, storedSchedule, recurrence, googleRecurrence };
 };
 
 const beginProviderOperation = async (
@@ -387,8 +429,9 @@ const mutateCalendarHold = async (
       const event = await createCalendarEvent(context.env, {
         id: providerEventId,
         summary: input.summary,
-        start: { dateTime: input.startsAt.toISOString(), timeZone: "America/Chicago" },
-        end: { dateTime: input.endsAt.toISOString(), timeZone: "America/Chicago" },
+        start: input.start,
+        end: input.end,
+        ...(input.googleRecurrence ? { recurrence: input.googleRecurrence } : {}),
         transparency: "opaque",
         extendedProperties: { private: { simonV3ResourceId: input.id, requestHash } },
       });
@@ -397,8 +440,8 @@ const mutateCalendarHold = async (
       }
       const receipt = `${event.id}:${clean(event.etag, 160) || "confirmed"}`;
       const data = {
-        id: input.id, summary: input.summary, starts_at: input.startsAt.toISOString(),
-        ends_at: input.endsAt.toISOString(), provider_event_id: event.id, state: "active",
+        id: input.id, summary: input.summary, ...input.storedSchedule,
+        recurrence: input.recurrence, provider_event_id: event.id, state: "active",
       };
       const steps = [{
         name: route.operationId, status: "succeeded", provider_confirmed: true,
