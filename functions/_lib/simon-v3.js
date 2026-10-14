@@ -126,11 +126,15 @@ const same = (left, right) => {
 
 export const authenticateSimonV3 = (request, env) => {
   const traceId = request.headers.get("x-simon-trace-id") || "";
-  if (!env.APPLICATIONS_DB || !env.SIMON_V3_SERVICE_TOKEN) {
+  if (!env.APPLICATIONS_DB || (!env.SIMON_V3_SERVICE_TOKEN && !env.SIMON_V3_SHADOW_TOKEN)
+      || (env.SIMON_V3_SERVICE_TOKEN && env.SIMON_V3_SHADOW_TOKEN
+        && same(env.SIMON_V3_SERVICE_TOKEN, env.SIMON_V3_SHADOW_TOKEN))) {
     return { error: problem(503, "provider_failure", "Simon V3 staging is not configured", traceId) };
   }
   const bearer = (request.headers.get("authorization") || "").match(/^Bearer\s+(.+)$/i)?.[1] || "";
-  if (!same(bearer, env.SIMON_V3_SERVICE_TOKEN)) {
+  const serviceAuthenticated = same(bearer, env.SIMON_V3_SERVICE_TOKEN || "");
+  const shadowAuthenticated = same(bearer, env.SIMON_V3_SHADOW_TOKEN || "");
+  if (!serviceAuthenticated && !shadowAuthenticated) {
     return { error: problem(401, "unauthorized", "Service authentication required", traceId) };
   }
   const actor = {
@@ -141,7 +145,11 @@ export const authenticateSimonV3 = (request, env) => {
   if (!isUuid(actor.person_id) || !SIMON_V3_ROLES.includes(actor.role) || !isUuid(actor.authority_grant_id)) {
     return { error: problem(401, "unauthorized", "Valid Simon actor headers are required", traceId) };
   }
-  return { actor, traceId };
+  return {
+    actor,
+    traceId,
+    credentialMode: shadowAuthenticated ? "shadow_read_only" : "service",
+  };
 };
 
 export const actorMatches = (headerActor, bodyActor) => Boolean(bodyActor)

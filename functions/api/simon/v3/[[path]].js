@@ -76,6 +76,7 @@ const loadResource = async (db, id) => db.prepare(`
 `).bind(id).first();
 
 const auditRead = async (context, route, actor, traceId, resourceId, outcome) => {
+  if (context.shadowReadOnlyCredential) return;
   await eventStatement(context.env.APPLICATIONS_DB, { traceId, route, actor, resourceId, outcome }).run();
 };
 
@@ -2599,7 +2600,16 @@ export async function onRequest(context) {
     if (!route) return problem(404, "not_found", "Simon V3 operation not found", suppliedTraceId);
     const authentication = authenticateSimonV3(context.request, context.env);
     if (authentication.error) return authentication.error;
-    const { actor, traceId } = authentication;
+    const { actor, traceId, credentialMode } = authentication;
+    if (credentialMode === "shadow_read_only") {
+      context.shadowReadOnlyCredential = true;
+      if (route.mode === "mutation") {
+        return problem(
+          403, "shadow_read_only", "Shadow credentials cannot perform mutations",
+          traceId, "No state was changed.",
+        );
+      }
+    }
     const denied = requireRouteAccess(route, actor, traceId);
     if (denied) return denied;
     const invalidPath = validatePathIds(route, traceId);

@@ -247,6 +247,53 @@ test("actor authentication requires the service token and all three actor header
   assert.equal(authenticateSimonV3(wrongToken, context(wrongToken).env).error.status, 401);
 });
 
+test("shadow credential permits reads but rejects all 36 mutations before state access", async () => {
+  const db = statefulCalendarDb();
+  const env = {
+    APPLICATIONS_DB: db,
+    SIMON_V3_SERVICE_TOKEN: "staging-token",
+    SIMON_V3_SHADOW_TOKEN: "shadow-read-only-token",
+  };
+  const shadowHeaders = {
+    ...headers(),
+    authorization: "Bearer shadow-read-only-token",
+  };
+  const read = new Request("https://preview.example/api/simon/v3/catalog", {
+    headers: shadowHeaders,
+  });
+  assert.equal((await onRequest(context(read, env))).status, 200);
+  assert.equal(db.events.length, 0);
+
+  const mutations = SIMON_V3_ROUTES.filter((route) => route.mode === "mutation");
+  assert.equal(mutations.length, 36);
+  for (const route of mutations) {
+    const path = route.pattern.replace(/:[a-z_]+/g, PERSON_ID);
+    const mutation = new Request(`https://preview.example/api/simon/v3${path}`, {
+      method: route.method,
+      headers: { ...shadowHeaders, "content-type": "application/json", "idempotency-key": `shadow-denied-${route.operationId}` },
+      body: JSON.stringify({ actor, reason: "must be denied", data: {} }),
+    });
+    const denied = await onRequest(context(mutation, env));
+    assert.equal(denied.status, 403, route.operationId);
+    assert.equal((await denied.json()).code, "shadow_read_only", route.operationId);
+  }
+  assert.equal(db.resources.size, 0);
+  assert.equal(db.operations.size, 0);
+  assert.equal(db.events.length, 0);
+});
+
+test("identical service and shadow credentials fail closed", async () => {
+  const request = new Request("https://preview.example/api/simon/v3/catalog", {
+    headers: headers(),
+  });
+  const response = await onRequest(context(request, {
+    SIMON_V3_SERVICE_TOKEN: "staging-token",
+    SIMON_V3_SHADOW_TOKEN: "staging-token",
+  }));
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "provider_failure");
+});
+
 test("header actor and body actor must match exactly", () => {
   assert.equal(actorMatches(actor, actor), true);
   assert.equal(actorMatches(actor, { ...actor, role: "client" }), false);
