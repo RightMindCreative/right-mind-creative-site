@@ -10,6 +10,8 @@ GOOGLE_CALENDAR_ID = "c_3b504bf0ad3a45df25a8ae608e8105b9e8251ee0fc89e0168fa99cee
 GOOGLE_EMAIL_IMPERSONATED_USER = "welcome@rightmindcreative.co"
 GOOGLE_IMPERSONATED_USER = "roo@rightmindcreative.co"
 GOOGLE_SERVICE_ACCOUNT_EMAIL = "right-mind-booking-staging@calendar-api-500920.iam.gserviceaccount.com"
+SIMON_V3_ENVIRONMENT = "staging"
+SIMON_V3_STAGING_NOTIFICATION_EMAIL = "welcome@rightmindcreative.co"
 
 [[d1_databases]]
 binding = "APPLICATIONS_DB"
@@ -33,6 +35,8 @@ GOOGLE_IMPERSONATED_USER = "roo@rightmindcreative.co"
 GOOGLE_SERVICE_ACCOUNT_EMAIL = "right-mind-booking-staging@calendar-api-500920.iam.gserviceaccount.com"
 PUBLIC_SITE_URL = "https://www.rightmindcreative.co"
 SIMON_APPLICATION_WEBHOOK_URL = "https://simon.rightmindcreative.co/events/application-submitted"
+SIMON_V3_ENVIRONMENT = "production"
+SIMON_V3_STAGING_NOTIFICATION_EMAIL = ""
 
 [[env.production.d1_databases]]
 binding = "APPLICATIONS_DB"

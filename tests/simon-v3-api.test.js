@@ -763,6 +763,86 @@ test("notification outbox deduplicates and assignment responses stay role scoped
   )).length, 1);
 });
 
+test("staging notification probe records a verified Gmail receipt without client data", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const keyPair = await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  );
+  const privateBytes = new Uint8Array(
+    await crypto.subtle.exportKey("pkcs8", keyPair.privateKey),
+  );
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(privateBytes).toString("base64")}\n-----END PRIVATE KEY-----`;
+  globalThis.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (target.includes("oauth2.googleapis.com/token")) {
+      return new Response(JSON.stringify({ access_token: "test-token" }), { status: 200 });
+    }
+    if (target.endsWith("/messages/send")) {
+      const payload = JSON.parse(options.body);
+      assert.match(payload.raw, /^[A-Za-z0-9_-]+$/);
+      assert.equal(String(options.headers.authorization), "Bearer test-token");
+      return new Response(JSON.stringify({ id: "gmail-staging-receipt" }), { status: 200 });
+    }
+    if (target.includes("/messages/gmail-staging-receipt?format=minimal")) {
+      return new Response(JSON.stringify({
+        id: "gmail-staging-receipt", labelIds: ["SENT"],
+      }), { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  const db = statefulCalendarDb();
+  const notificationId = "14141414-1414-4414-8414-141414141414";
+  const request = new Request("https://preview.example/api/simon/v3/notifications", {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json",
+      "idempotency-key": "staging-gmail-delivery-0001",
+    }),
+    body: JSON.stringify({
+      actor,
+      reason: "verify isolated staging delivery",
+      data: {
+        id: notificationId,
+        audience_role: "admin",
+        channel: "email",
+        template: "staging_delivery_probe",
+        dedupe_key: "staging-gmail-delivery-0001",
+        variables: {},
+      },
+    }),
+  });
+  const env = {
+    APPLICATIONS_DB: db,
+    SIMON_V3_SERVICE_TOKEN: "staging-token",
+    SIMON_V3_ENVIRONMENT: "staging",
+    SIMON_V3_STAGING_NOTIFICATION_EMAIL: "welcome@rightmindcreative.co",
+    GOOGLE_SERVICE_ACCOUNT_EMAIL: "staging@example.iam.gserviceaccount.com",
+    GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: privateKey,
+    GOOGLE_EMAIL_IMPERSONATED_USER: "welcome@rightmindcreative.co",
+    DECISION_EMAIL_FROM: "welcome@rightmindcreative.co",
+  };
+  const response = await onRequest(context(request, env));
+  assert.equal(response.status, 202);
+  const stored = db.resources.get(notificationId);
+  assert.equal(stored.state, "delivered");
+  const data = JSON.parse(stored.data_json);
+  assert.equal(data.provider_receipt, "gmail-staging-receipt");
+  assert.equal(data.attempts, 1);
+  assert.equal("recipient_email" in data, false);
+  const operation = await response.json();
+  assert.equal(operation.steps.at(-1).provider_confirmed, true);
+  assert.equal(operation.steps.at(-1).provider_receipt_ref, "gmail-staging-receipt");
+});
+
 test("application submission and deposit approval coordinate calendar, Stripe, and outbox receipts", async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });

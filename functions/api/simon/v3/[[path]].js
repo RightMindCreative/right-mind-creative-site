@@ -10,6 +10,9 @@ import {
   createSimonPaymentCheckout, createSimonRefund, getSimonCheckout, getSimonRefund,
   expireSimonCheckout, getStripeHealth,
 } from "../../../_lib/stripe.js";
+import {
+  deliverStagingNotificationProbe, isStagingDeliveryProbe,
+} from "../../../_lib/simon-v3-notification-delivery.js";
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
 const now = () => new Date().toISOString();
@@ -1539,6 +1542,89 @@ const mutateNotification = async (
     variables: body.data.variables || {}, deliver_after: body.data.deliver_after || null,
     state: "queued", attempts: 0, delivered_at: null, provider_receipt: null,
   };
+  if (isStagingDeliveryProbe(data)) {
+    await db.batch([
+      notificationWrite(db, data, recipient, timestamp),
+      eventStatement(db, {
+        traceId, route, actor, resourceId: id, operationId, outcome: "queued",
+        evidence: { provider: "gmail", provider_confirmed: false },
+      }),
+    ]);
+    try {
+      const receipt = await deliverStagingNotificationProbe(context.env, id);
+      const delivered = {
+        ...data,
+        state: "delivered",
+        attempts: 1,
+        delivered_at: receipt.verified_at,
+        provider_receipt: receipt.receipt_ref,
+      };
+      return completePaymentOperation(db, {
+        operationId, route, actor, traceId,
+        refs: [{ kind: "notification", id, version: 2 }],
+        resourceId: id,
+        steps: [
+          {
+            name: "durable_outbox_enqueue", status: "succeeded",
+            provider_confirmed: true, provider_receipt_ref: id,
+            retry_safe: true, error: null,
+          },
+          {
+            name: "notification_delivery", status: "succeeded",
+            provider_confirmed: true, provider_receipt_ref: receipt.receipt_ref,
+            retry_safe: true, error: null,
+          },
+        ],
+        after: JSON.stringify(delivered),
+        statements: [
+          db.prepare(`UPDATE simon_v3_resources SET version = ?, state = ?,
+            data_json = ?, updated_at = ? WHERE id = ?`)
+            .bind(2, "delivered", JSON.stringify(delivered), receipt.verified_at, id),
+        ],
+      });
+    } catch {
+      const failedAt = now();
+      const failed = {
+        ...data,
+        state: "failed",
+        attempts: 1,
+        next_attempt_at: new Date(Date.parse(failedAt) + 60000).toISOString(),
+        last_error_code: "delivery_provider_failure",
+      };
+      const steps = [
+        {
+          name: "durable_outbox_enqueue", status: "succeeded",
+          provider_confirmed: true, provider_receipt_ref: id,
+          retry_safe: true, error: null,
+        },
+        {
+          name: "notification_delivery", status: "failed",
+          provider_confirmed: false, provider_receipt_ref: null,
+          retry_safe: true, error: { code: "provider_failure", provider: "gmail" },
+        },
+      ];
+      await db.batch([
+        db.prepare(`UPDATE simon_v3_resources SET version = ?, state = ?,
+          data_json = ?, updated_at = ? WHERE id = ?`)
+          .bind(2, "failed", JSON.stringify(failed), failedAt, id),
+        db.prepare(`UPDATE simon_v3_operations SET status = 'partially_failed',
+          resource_refs_json = ?, steps_json = ?, after_json = ?, completed_at = ? WHERE id = ?`)
+          .bind(
+            JSON.stringify([{ kind: "notification", id, version: 2 }]),
+            JSON.stringify(steps), JSON.stringify(failed), failedAt, operationId,
+          ),
+        eventStatement(db, {
+          traceId, route, actor, resourceId: id, operationId, outcome: "partially_failed",
+          evidence: { provider: "gmail", provider_confirmed: false },
+        }),
+      ]);
+      return problem(
+        502, "provider_failure", "Staging notification delivery was not confirmed",
+        traceId, "The notification remains retryable and no delivery was claimed.",
+        { operation_id: operationId },
+      );
+    }
+  }
   return completePaymentOperation(db, {
     operationId, route, actor, traceId, refs, resourceId: id,
     steps: [{ name: "durable_outbox_enqueue", status: "succeeded", provider_confirmed: true, provider_receipt_ref: id, retry_safe: true, error: null }],
