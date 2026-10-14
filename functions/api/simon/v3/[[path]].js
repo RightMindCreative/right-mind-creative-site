@@ -1734,6 +1734,97 @@ const mutateFileIntake = async (
   }
 };
 
+const mutateFileScanResult = async (
+  context, route, actor, traceId, key, requestHash, body, current,
+) => {
+  if (!hasOnlyKeys(body.data, [
+    "scanner", "scanner_version", "signature_version", "checksum_sha256",
+    "verdict", "scanned_at",
+  ])) return problem(400, "validation_error", "File scan result contains unsupported fields", traceId);
+  const scanner = clean(body.data.scanner, 40).toLowerCase();
+  const scannerVersion = clean(body.data.scanner_version, 80);
+  const signatureVersion = clean(body.data.signature_version, 120);
+  const checksum = clean(body.data.checksum_sha256, 64).toLowerCase();
+  const verdict = clean(body.data.verdict, 20).toLowerCase();
+  const scannedAt = clean(body.data.scanned_at, 40);
+  const scannedTime = Date.parse(scannedAt);
+  const currentData = JSON.parse(current.data_json);
+  if (scanner !== "clamav" || !scannerVersion || !signatureVersion
+      || !/^[0-9a-f]{64}$/.test(checksum) || !["clean", "malicious"].includes(verdict)
+      || Number.isNaN(scannedTime) || scannedTime > Date.now() + 5 * 60 * 1000) {
+    return problem(400, "validation_error", "A complete ClamAV scan receipt is required", traceId);
+  }
+  if (checksum !== currentData.checksum_sha256) {
+    return problem(409, "checksum_conflict", "Scan receipt checksum does not match the quarantined file", traceId);
+  }
+  if (currentData.scan_state !== "pending" || currentData.usable !== false) {
+    return problem(409, "scan_state_conflict", "Only a pending quarantined file can accept its first scan receipt", traceId);
+  }
+  const timestamp = now();
+  const operationId = crypto.randomUUID();
+  const version = Number(current.version) + 1;
+  const state = verdict === "clean" ? "ready" : "quarantined";
+  const data = {
+    ...currentData,
+    scan_state: verdict,
+    state,
+    usable: verdict === "clean",
+    scan_receipt: {
+      provider: scanner,
+      scanner_version: scannerVersion,
+      signature_version: signatureVersion,
+      checksum_sha256: checksum,
+      scanned_at: new Date(scannedTime).toISOString(),
+    },
+  };
+  const refs = [{ kind: "file", id: current.id, version }];
+  await beginProviderOperation(context.env.APPLICATIONS_DB, {
+    id: operationId, route, key, requestHash, traceId, actor,
+    resourceRefs: refs, before: JSON.stringify(resourceFromRow(current)),
+  });
+  const receiptRef = `clamav:${checksum.slice(0, 16)}:${signatureVersion}`;
+  const steps = [{
+    name: "malware_scan", status: "succeeded", provider_confirmed: true,
+    provider_receipt_ref: receiptRef, retry_safe: true, error: null,
+  }];
+  if (verdict === "malicious") {
+    if (!context.env.APPLICATION_UPLOADS || !currentData.private_storage_ref) {
+      await failProviderOperation(context.env.APPLICATIONS_DB, {
+        id: operationId, route, actor, traceId, resourceId: current.id,
+      });
+      return problem(503, "provider_failure", "Private quarantine is not configured for malware removal", traceId);
+    }
+    try {
+      await context.env.APPLICATION_UPLOADS.delete(currentData.private_storage_ref);
+      if (await context.env.APPLICATION_UPLOADS.head(currentData.private_storage_ref)) {
+        throw new Error("quarantine_purge_not_confirmed");
+      }
+      data.private_storage_ref = null;
+      data.purged_at = timestamp;
+      steps.push({
+        name: "private_quarantine_purge", status: "succeeded", provider_confirmed: true,
+        provider_receipt_ref: current.id, retry_safe: true, error: null,
+      });
+    } catch {
+      await failProviderOperation(context.env.APPLICATIONS_DB, {
+        id: operationId, route, actor, traceId, resourceId: current.id,
+      });
+      return problem(
+        502, "provider_failure", "Malicious quarantine removal was not confirmed",
+        traceId, "The file remains unusable and quarantined.", { operation_id: operationId },
+      );
+    }
+  }
+  return completePaymentOperation(context.env.APPLICATIONS_DB, {
+    operationId, route, actor, traceId, refs, resourceId: current.id,
+    steps,
+    after: JSON.stringify(data),
+    statements: [context.env.APPLICATIONS_DB.prepare(`UPDATE simon_v3_resources SET version = ?,
+      state = ?, data_json = ?, updated_at = ? WHERE id = ?`)
+      .bind(version, state, JSON.stringify(data), timestamp, current.id)],
+  });
+};
+
 const mutateAssignment = async (
   context, route, actor, traceId, key, requestHash, body, current,
 ) => {
@@ -2024,6 +2115,11 @@ const mutate = async (context, route, actor, traceId) => {
   if (route.operationId === "createFileIntake") {
     return mutateFileIntake(
       context, route, actor, traceId, idempotencyKey, requestHash, body,
+    );
+  }
+  if (route.operationId === "recordFileScanResult") {
+    return mutateFileScanResult(
+      context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );
   }
   if (["createAssignment", "respondToAssignment", "cancelAssignment"].includes(route.operationId)) {

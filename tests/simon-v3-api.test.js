@@ -159,9 +159,9 @@ const context = (request, env = {}) => ({
 });
 
 test("Simon V3 route table covers every formal operation exactly once", () => {
-  assert.equal(SIMON_V3_ROUTES.length, 61);
-  assert.equal(SIMON_V3_ROUTES.filter((route) => route.mode === "mutation").length, 34);
-  assert.equal(new Set(SIMON_V3_ROUTES.map((route) => route.operationId)).size, 61);
+  assert.equal(SIMON_V3_ROUTES.length, 62);
+  assert.equal(SIMON_V3_ROUTES.filter((route) => route.mode === "mutation").length, 35);
+  assert.equal(new Set(SIMON_V3_ROUTES.map((route) => route.operationId)).size, 62);
 });
 
 test("route matching preserves contract operation IDs and path parameters", () => {
@@ -944,7 +944,7 @@ test("rollback refuses to overwrite a resource changed after the source operatio
   assert.equal(db.resources.get(resourceId).version, 2);
 });
 
-test("file intake verifies bytes into private quarantine without claiming a clean scan", async () => {
+test("file intake accepts matching clean receipts and purges confirmed malware", async () => {
   const db = statefulCalendarDb();
   const timestamp = new Date().toISOString();
   const bookingId = "12121212-1212-4212-8212-121212121212";
@@ -996,4 +996,87 @@ test("file intake verifies bytes into private quarantine without claiming a clea
   assert.equal(body.data.scan_state, "pending");
   assert.equal(body.data.usable, false);
   assert.equal("private_storage_ref" in body.data, false);
+
+  const wrongReceipt = new Request(`https://preview.example/api/simon/v3/files/${fileId}/scan-results`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json",
+      "idempotency-key": "file-scan-wrong-checksum-0001",
+      "if-match": "1",
+    }),
+    body: JSON.stringify({ actor, reason: "reject a mismatched scan receipt", data: {
+      scanner: "clamav", scanner_version: "1.5.4", signature_version: "daily-28153",
+      checksum_sha256: "0".repeat(64), verdict: "clean", scanned_at: timestamp,
+    } }),
+  });
+  const wrongResponse = await onRequest(context(wrongReceipt, env));
+  assert.equal(wrongResponse.status, 409);
+  assert.equal(JSON.parse(db.resources.get(fileId).data_json).scan_state, "pending");
+
+  const cleanReceipt = new Request(`https://preview.example/api/simon/v3/files/${fileId}/scan-results`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json",
+      "idempotency-key": "file-scan-clean-receipt-0001",
+      "if-match": "1",
+    }),
+    body: JSON.stringify({ actor, reason: "record a matching ClamAV scan receipt", data: {
+      scanner: "clamav", scanner_version: "1.5.4", signature_version: "daily-28153",
+      checksum_sha256: checksum, verdict: "clean", scanned_at: timestamp,
+    } }),
+  });
+  const cleanResponse = await onRequest(context(cleanReceipt, env));
+  assert.equal(cleanResponse.status, 202);
+  const scanned = db.resources.get(fileId);
+  assert.equal(scanned.version, 2);
+  assert.equal(scanned.state, "ready");
+  assert.equal(JSON.parse(scanned.data_json).scan_state, "clean");
+  assert.equal(JSON.parse(scanned.data_json).usable, true);
+  const scanOperation = await cleanResponse.json();
+  assert.equal(scanOperation.steps.at(-1).name, "malware_scan");
+  assert.equal(scanOperation.steps.at(-1).provider_confirmed, true);
+
+  const maliciousFileId = "17171717-1717-4717-8717-171717171717";
+  const eicar = new TextEncoder().encode([
+    "X5O!P%@AP[4\\PZX54(P^)", "7CC)7}$EICAR-STANDARD-",
+    "ANTIVIRUS-TEST-FILE!$H+H*",
+  ].join(""));
+  const maliciousChecksum = [...new Uint8Array(await crypto.subtle.digest("SHA-256", eicar))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const maliciousIntake = new Request("https://preview.example/api/simon/v3/files/intakes", {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": "file-malware-quarantine-0001" }),
+    body: JSON.stringify({ actor, reason: "quarantine a synthetic antivirus fixture", data: {
+      id: maliciousFileId, owner_person_id: PERSON_ID, target_record_kind: "booking",
+      target_record_id: bookingId, filename: "synthetic-antivirus-fixture.txt",
+      declared_media_type: "text/plain", content_base64: Buffer.from(eicar).toString("base64"),
+      checksum_sha256: maliciousChecksum,
+    } }),
+  });
+  assert.equal((await onRequest(context(maliciousIntake, env))).status, 202);
+  assert.equal(objects.size, 2);
+
+  const maliciousReceipt = new Request(`https://preview.example/api/simon/v3/files/${maliciousFileId}/scan-results`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json",
+      "idempotency-key": "file-malware-receipt-0001",
+      "if-match": "1",
+    }),
+    body: JSON.stringify({ actor, reason: "record and purge a confirmed malware fixture", data: {
+      scanner: "clamav", scanner_version: "1.5.4", signature_version: "daily-28153",
+      checksum_sha256: maliciousChecksum, verdict: "malicious", scanned_at: timestamp,
+    } }),
+  });
+  const maliciousResponse = await onRequest(context(maliciousReceipt, env));
+  assert.equal(maliciousResponse.status, 202);
+  const malicious = JSON.parse(db.resources.get(maliciousFileId).data_json);
+  assert.equal(malicious.scan_state, "malicious");
+  assert.equal(malicious.usable, false);
+  assert.equal(malicious.private_storage_ref, null);
+  assert.ok(malicious.purged_at);
+  assert.equal(objects.size, 1);
+  const maliciousOperation = await maliciousResponse.json();
+  assert.equal(maliciousOperation.steps.at(-1).name, "private_quarantine_purge");
+  assert.equal(maliciousOperation.steps.at(-1).provider_confirmed, true);
 });

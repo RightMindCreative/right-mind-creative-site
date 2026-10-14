@@ -69,6 +69,7 @@ export const SIMON_V3_ROUTES = Object.freeze([
   route("GET", "/views/employees/:employee_id/sessions/:booking_id", "getEmployeeSessionView", "employee_session_view", { roles: EMPLOYEE, ownerScoped: true, trace: true }),
   route("POST", "/files/intakes", "createFileIntake", "file", { roles: ALL, ownerScoped: true, create: true, provider: "r2" }),
   route("GET", "/files/:file_id", "getFileMetadata", "file", { roles: ALL, ownerScoped: true, trace: true }),
+  route("POST", "/files/:file_id/scan-results", "recordFileScanResult", "file", { ifMatch: true, provider: "malware_scanner" }),
   route("POST", "/notifications", "enqueueNotification", "notification", { create: true, provider: "notifications" }),
   route("GET", "/notifications/:notification_id", "getNotification", "notification"),
   route("GET", "/events", "listEvents", "event", { special: "events" }),
