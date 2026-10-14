@@ -23,7 +23,7 @@ export const SIMON_V3_ROUTES = Object.freeze([
   route("PATCH", "/clients/:client_id", "updateClient", "client", { roles: CLIENT, ownerScoped: true, ifMatch: true }),
   route("POST", "/clients/:client_id/archive", "archiveClient", "client"),
   route("POST", "/clients/:client_id/restore", "restoreClient", "client"),
-  route("POST", "/clients/merge", "mergeClients", "client", { provider: "website" }),
+  route("POST", "/clients/merge", "mergeClients", "client", { roles: ["admin"], provider: "website" }),
   route("GET", "/employees", "listEmployees", "employee"),
   route("POST", "/employees", "createEmployee", "employee", { create: true }),
   route("GET", "/employees/:employee_id", "getEmployee", "employee", { roles: EMPLOYEE, ownerScoped: true }),

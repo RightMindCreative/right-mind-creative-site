@@ -2166,12 +2166,260 @@ const mutateApplicationLifecycle = async (
   }
 };
 
+const CLIENT_MERGE_MANAGED_FIELDS = new Set([
+  "id", "owner_person_id", "version", "state", "archived", "merged_at",
+  "merged_into_client_id", "merged_source_client_ids",
+]);
+
+const jsonEqual = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+
+const mergeArtistIdentities = (sourceData, targetData) => {
+  const values = [];
+  for (const data of [targetData, sourceData]) {
+    if (typeof data.artist_name === "string" && data.artist_name.trim()) values.push(data.artist_name.trim());
+    if (Array.isArray(data.artist_identities)) {
+      for (const value of data.artist_identities) {
+        if (typeof value === "string" && value.trim()) values.push(value.trim());
+      }
+    }
+  }
+  return [...new Set(values)];
+};
+
+const resolveMergedClientData = (sourceData, targetData, resolutions) => {
+  const result = { ...targetData };
+  const conflicts = [];
+  const keys = new Set([...Object.keys(sourceData), ...Object.keys(targetData)]);
+  keys.delete("artist_identities");
+  for (const key of keys) {
+    if (CLIENT_MERGE_MANAGED_FIELDS.has(key)) continue;
+    const sourceHas = Object.hasOwn(sourceData, key);
+    const targetHas = Object.hasOwn(targetData, key);
+    if (!targetHas && sourceHas) {
+      result[key] = sourceData[key];
+    } else if (sourceHas && targetHas && !jsonEqual(sourceData[key], targetData[key])) {
+      const choice = resolutions[key];
+      if (!['source', 'target'].includes(choice)) conflicts.push(key);
+      else result[key] = choice === "source" ? sourceData[key] : targetData[key];
+    }
+  }
+  const validResolutionKeys = new Set(conflicts);
+  for (const key of keys) {
+    if (sourceData[key] !== undefined && targetData[key] !== undefined
+        && !jsonEqual(sourceData[key], targetData[key])) validResolutionKeys.add(key);
+  }
+  const unexpected = Object.keys(resolutions).filter((key) => (
+    CLIENT_MERGE_MANAGED_FIELDS.has(key) || !validResolutionKeys.has(key)
+  ));
+  if (unexpected.length) return { error: "field_resolution_not_conflicting" };
+  if (conflicts.length) return { error: "field_resolution_required", conflicts: conflicts.sort() };
+  const artistIdentities = mergeArtistIdentities(sourceData, targetData);
+  if (artistIdentities.length) result.artist_identities = artistIdentities;
+  return { data: result };
+};
+
+const replaceMergedClientReferences = (
+  value, { sourceOwnerId, targetOwnerId, sourceClientId, targetClientId }, parent = null,
+) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => replaceMergedClientReferences(
+      item, { sourceOwnerId, targetOwnerId, sourceClientId, targetClientId }, parent,
+    ));
+  }
+  if (!value || typeof value !== "object") return value;
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (["owner_person_id", "client_person_id", "recipient_person_id"].includes(key)
+        && item === sourceOwnerId) result[key] = targetOwnerId;
+    else if (["client_id", "owner_client_id"].includes(key) && item === sourceClientId) {
+      result[key] = targetClientId;
+    } else if (key === "target_record_id" && item === sourceClientId
+        && value.target_record_kind === "client") result[key] = targetClientId;
+    else result[key] = replaceMergedClientReferences(
+      item, { sourceOwnerId, targetOwnerId, sourceClientId, targetClientId }, key,
+    );
+  }
+  return result;
+};
+
+const mergeSnapshot = (row) => ({
+  id: row.id, kind: row.kind, version: Number(row.version), state: row.state,
+  owner_person_id: row.owner_person_id, data_json: row.data_json,
+  archived: Number(row.archived), created_at: row.created_at, updated_at: row.updated_at,
+});
+
+const mutateClientMerge = async (
+  context, route, actor, traceId, key, requestHash, body,
+) => {
+  const db = context.env.APPLICATIONS_DB;
+  if (!hasOnlyKeys(body.data, [
+    "source_client_id", "target_client_id", "source_version", "target_version",
+    "field_resolutions",
+  ])) return problem(400, "validation_error", "Client merge contains unsupported fields", traceId);
+  const sourceId = clean(body.data.source_client_id, 36);
+  const targetId = clean(body.data.target_client_id, 36);
+  const sourceVersion = body.data.source_version;
+  const targetVersion = body.data.target_version;
+  const resolutions = body.data.field_resolutions;
+  if (!isUuid(sourceId) || !isUuid(targetId) || sourceId === targetId
+      || !Number.isInteger(sourceVersion) || sourceVersion < 1
+      || !Number.isInteger(targetVersion) || targetVersion < 1
+      || !resolutions || typeof resolutions !== "object" || Array.isArray(resolutions)
+      || Object.values(resolutions).some((value) => !["source", "target"].includes(value))) {
+    return problem(400, "validation_error", "Merge requires distinct clients, exact versions, and explicit field choices", traceId);
+  }
+  const [source, target] = await Promise.all([loadResource(db, sourceId), loadResource(db, targetId)]);
+  if (!source || source.kind !== "client" || Number(source.archived)
+      || !target || target.kind !== "client" || Number(target.archived)) {
+    return problem(404, "not_found", "Both active client records are required", traceId);
+  }
+  if (Number(source.version) !== sourceVersion || Number(target.version) !== targetVersion) {
+    return problem(409, "version_conflict", "A selected client changed before merge", traceId, "No state was changed.");
+  }
+  const sourceData = JSON.parse(source.data_json);
+  const targetData = JSON.parse(target.data_json);
+  const resolution = resolveMergedClientData(sourceData, targetData, resolutions);
+  if (resolution.error) {
+    return problem(
+      409, resolution.error, "Every conflicting client field requires an explicit choice",
+      traceId, "No state was changed.", { conflicting_fields: resolution.conflicts || [] },
+    );
+  }
+  const sourceOwnerId = source.owner_person_id || source.id;
+  const targetOwnerId = target.owner_person_id || target.id;
+  if (!isUuid(sourceOwnerId) || !isUuid(targetOwnerId)) {
+    return problem(409, "identity_conflict", "Both clients require verified owner identities", traceId);
+  }
+  const relatedResult = await db.prepare(`SELECT * FROM simon_v3_resources
+    WHERE owner_person_id = ? AND id NOT IN (?, ?) ORDER BY created_at ASC`)
+    .bind(sourceOwnerId, sourceId, targetId).all();
+  const related = relatedResult.results || [];
+  const timestamp = now();
+  const targetMergedIds = Array.isArray(targetData.merged_source_client_ids)
+    ? targetData.merged_source_client_ids.filter((value) => isUuid(value)) : [];
+  const mergedTargetData = {
+    ...resolution.data,
+    id: target.id,
+    owner_person_id: targetOwnerId,
+    merged_source_client_ids: [...new Set([...targetMergedIds, source.id])],
+    merged_at: timestamp,
+  };
+  const mergedSourceData = {
+    ...sourceData,
+    id: source.id,
+    owner_person_id: sourceOwnerId,
+    merged_into_client_id: target.id,
+    merged_at: timestamp,
+  };
+  const referenceContext = { sourceOwnerId, targetOwnerId, sourceClientId: source.id, targetClientId: target.id };
+  const rewritten = related.map((row) => ({
+    row,
+    version: Number(row.version) + 1,
+    data: replaceMergedClientReferences(JSON.parse(row.data_json), referenceContext),
+  }));
+  const snapshots = [source, target, ...related].map(mergeSnapshot);
+  const refs = [
+    { kind: "client", id: source.id, version: Number(source.version) + 1 },
+    { kind: "client", id: target.id, version: Number(target.version) + 1 },
+    ...rewritten.map(({ row, version }) => ({ kind: row.kind, id: row.id, version })),
+  ];
+  const operationId = crypto.randomUUID();
+  await beginProviderOperation(db, {
+    id: operationId, route, key, requestHash, traceId, actor, resourceRefs: refs,
+    before: JSON.stringify({ type: "client_merge_v1", rows: snapshots }),
+  });
+  const steps = [
+    { name: "resolve_client_field_conflicts", status: "succeeded", provider_confirmed: true, provider_receipt_ref: target.id, retry_safe: true, error: null },
+    { name: "reassign_client_owned_records", status: "succeeded", provider_confirmed: true, provider_receipt_ref: String(rewritten.length), retry_safe: true, error: null },
+    { name: "archive_merged_source_client", status: "succeeded", provider_confirmed: true, provider_receipt_ref: source.id, retry_safe: true, error: null },
+  ];
+  const rollbackDefinition = {
+    available: true, type: "client_merge_v1", source_client_id: source.id,
+    target_client_id: target.id, record_count: snapshots.length,
+  };
+  const statements = [
+    db.prepare(`UPDATE simon_v3_resources SET version = ?, state = ?, owner_person_id = ?,
+      data_json = ?, archived = 0, updated_at = ? WHERE id = ?`)
+      .bind(Number(target.version) + 1, target.state, targetOwnerId, JSON.stringify(mergedTargetData), timestamp, target.id),
+    db.prepare(`UPDATE simon_v3_resources SET version = ?, state = 'archived', owner_person_id = ?,
+      data_json = ?, archived = 1, updated_at = ? WHERE id = ?`)
+      .bind(Number(source.version) + 1, targetOwnerId, JSON.stringify(mergedSourceData), timestamp, source.id),
+    ...rewritten.map(({ row, version, data }) => db.prepare(`UPDATE simon_v3_resources
+      SET version = ?, owner_person_id = ?, data_json = ?, updated_at = ? WHERE id = ?`)
+      .bind(version, targetOwnerId, JSON.stringify(data), timestamp, row.id)),
+    db.prepare(`UPDATE simon_v3_operations SET status = 'succeeded', resource_refs_json = ?,
+      steps_json = ?, rollback_json = ?, after_json = ?, completed_at = ? WHERE id = ?`)
+      .bind(JSON.stringify(refs), JSON.stringify(steps), JSON.stringify(rollbackDefinition),
+        JSON.stringify({ source_client_id: source.id, target_client_id: target.id, reassigned_records: rewritten.length }),
+        timestamp, operationId),
+    eventStatement(db, {
+      traceId, route, actor, resourceId: target.id, operationId, outcome: "succeeded",
+      evidence: { provider: "website", provider_confirmed: true, reassigned_records: rewritten.length },
+    }),
+  ];
+  await db.batch(statements);
+  const operation = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?")
+    .bind(operationId).first();
+  return jsonResponse(operationFromRow(operation), 202);
+};
+
 const rollback = async (context, route, actor, traceId, key, requestHash) => {
   const db = context.env.APPLICATIONS_DB;
   const source = await db.prepare("SELECT * FROM simon_v3_operations WHERE id = ?").bind(route.params.operation_id).first();
   if (!source) return problem(404, "not_found", "Operation not found", traceId);
   const definition = JSON.parse(source.rollback_json || '{"available":false}');
   if (!definition.available) return problem(409, "invalid_transition", "That operation cannot be rolled back", traceId);
+  if (definition.type === "client_merge_v1") {
+    const beforeBundle = JSON.parse(source.before_json || "{}");
+    const refs = JSON.parse(source.resource_refs_json || "[]");
+    if (beforeBundle.type !== "client_merge_v1" || !Array.isArray(beforeBundle.rows)
+        || beforeBundle.rows.length !== refs.length) {
+      return problem(409, "invalid_transition", "Client merge rollback evidence is incomplete", traceId);
+    }
+    const currentRows = [];
+    for (const ref of refs) {
+      const current = await loadResource(db, ref.id);
+      if (!current || current.kind !== ref.kind || Number(current.version) !== Number(ref.version)) {
+        return problem(409, "version_conflict", "A merged record changed after the merge", traceId, "No state was changed.");
+      }
+      currentRows.push(current);
+    }
+    const timestamp = now();
+    const operationId = crypto.randomUUID();
+    const restoredRefs = currentRows.map((row) => ({
+      kind: row.kind, id: row.id, version: Number(row.version) + 1,
+    }));
+    const steps = [{
+      name: "restore_client_merge_before_images", status: "compensated",
+      provider_confirmed: true, provider_receipt_ref: operationId, retry_safe: true, error: null,
+    }];
+    const operation = {
+      id: operationId, status: "rolled_back", idempotency_key: key, trace_id: traceId,
+      resource_refs: restoredRefs, steps, rollback: { available: false },
+      created_at: timestamp, completed_at: timestamp,
+    };
+    const statements = beforeBundle.rows.map((before, index) => db.prepare(`UPDATE simon_v3_resources
+      SET version = ?, state = ?, owner_person_id = ?, data_json = ?, archived = ?, updated_at = ?
+      WHERE id = ?`).bind(
+      restoredRefs[index].version, before.state, before.owner_person_id, before.data_json,
+      before.archived, timestamp, before.id,
+    ));
+    statements.push(
+      db.prepare(`INSERT INTO simon_v3_operations
+        (id, action, idempotency_key, request_hash, trace_id, requester_person_id, requester_role,
+         status, resource_refs_json, steps_json, rollback_json, before_json, after_json, created_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'rolled_back', ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(operationId, route.operationId, key, requestHash, traceId, actor.person_id, actor.role,
+          JSON.stringify(restoredRefs), JSON.stringify(steps), '{"available":false}',
+          source.after_json, source.before_json, timestamp, timestamp),
+      eventStatement(db, {
+        traceId, route, actor, resourceId: definition.target_client_id,
+        operationId, outcome: "rolled_back", evidence: { source_operation_id: source.id },
+      }),
+    );
+    await db.batch(statements);
+    return jsonResponse(operation, 202);
+  }
   const refs = JSON.parse(source.resource_refs_json || "[]");
   const target = refs[0];
   if (!target || !source.before_json) return problem(409, "invalid_transition", "Rollback evidence is incomplete", traceId);
@@ -2254,6 +2502,11 @@ const mutate = async (context, route, actor, traceId) => {
   }
   if (route.operationId === "createFileIntake") {
     return mutateFileIntake(
+      context, route, actor, traceId, idempotencyKey, requestHash, body,
+    );
+  }
+  if (route.operationId === "mergeClients") {
+    return mutateClientMerge(
       context, route, actor, traceId, idempotencyKey, requestHash, body,
     );
   }

@@ -39,6 +39,17 @@ const statefulCalendarDb = () => {
   const events = [];
   const execute = (sql, values) => {
     if (sql.includes("INSERT INTO simon_v3_operations")) {
+      if (sql.includes("'rolled_back'")) {
+        const [id, action, idempotency_key, request_hash, trace_id,
+          requester_person_id, requester_role, resource_refs_json, steps_json,
+          rollback_json, before_json, after_json, created_at, completed_at] = values;
+        operations.set(id, {
+          id, action, idempotency_key, request_hash, trace_id, requester_person_id,
+          requester_role, status: "rolled_back", resource_refs_json, steps_json,
+          rollback_json, before_json, after_json, created_at, completed_at,
+        });
+        return { success: true };
+      }
       const [id, action, idempotency_key, request_hash, trace_id,
         requester_person_id, requester_role, resource_refs_json, steps_json,
         before_json, created_at] = values;
@@ -63,11 +74,41 @@ const statefulCalendarDb = () => {
         data_json, archived: 0, created_at, updated_at,
       });
     } else if (sql.includes("UPDATE simon_v3_operations SET status = 'succeeded'")) {
-      const [resource_refs_json, steps_json, after_json, completed_at, id] = values;
+      const hasRollback = sql.includes("rollback_json = ?");
+      const [resource_refs_json, steps_json, third, fourth, fifth, sixth] = values;
+      const rollback_json = hasRollback ? third : operations.get(hasRollback ? sixth : fifth)?.rollback_json;
+      const after_json = hasRollback ? fourth : third;
+      const completed_at = hasRollback ? fifth : fourth;
+      const id = hasRollback ? sixth : fifth;
       Object.assign(operations.get(id), {
-        status: "succeeded", resource_refs_json, steps_json, after_json, completed_at,
+        status: "succeeded", resource_refs_json, steps_json, rollback_json,
+        after_json, completed_at,
       });
-    } else if (sql.includes("UPDATE simon_v3_resources SET version")) {
+    } else if (sql.includes("UPDATE simon_v3_resources") && sql.includes("SET version")) {
+      if (sql.includes("state = ?") && sql.includes("owner_person_id = ?") && sql.includes("archived = ?")) {
+        const [version, state, owner_person_id, data_json, archived, updated_at, id] = values;
+        Object.assign(resources.get(id), { version, state, owner_person_id, data_json, archived, updated_at });
+        return { success: true };
+      }
+      if (sql.includes("state = 'archived'")) {
+        const [version, owner_person_id, data_json, updated_at, id] = values;
+        Object.assign(resources.get(id), {
+          version, state: "archived", owner_person_id, data_json, archived: 1, updated_at,
+        });
+        return { success: true };
+      }
+      if (sql.includes("state = ?") && sql.includes("owner_person_id = ?") && sql.includes("archived = 0")) {
+        const [version, state, owner_person_id, data_json, updated_at, id] = values;
+        Object.assign(resources.get(id), {
+          version, state, owner_person_id, data_json, archived: 0, updated_at,
+        });
+        return { success: true };
+      }
+      if (sql.includes("owner_person_id = ?") && !sql.includes("state =")) {
+        const [version, owner_person_id, data_json, updated_at, id] = values;
+        Object.assign(resources.get(id), { version, owner_person_id, data_json, updated_at });
+        return { success: true };
+      }
       const restoresState = sql.includes("state = ?");
       const [version, stateOrData, dataOrUpdated, updatedOrId, maybeId] = values;
       const id = restoresState ? maybeId : updatedOrId;
@@ -119,6 +160,14 @@ const statefulCalendarDb = () => {
           return null;
         },
         async all() {
+          if (sql.includes("owner_person_id = ?") && sql.includes("id NOT IN")) {
+            const [owner, firstExcluded, secondExcluded] = this.values;
+            return { results: [...resources.values()].filter((row) => (
+              row.owner_person_id === owner
+              && row.id !== firstExcluded
+              && row.id !== secondExcluded
+            )) };
+          }
           if (sql.includes("retention_expires_at")) {
             const cutoff = Date.parse(this.values[0]);
             return { results: [...resources.values()].filter((row) => {
@@ -233,7 +282,7 @@ test("mutations reject undeclared top-level fields", async () => {
   assert.equal((await response.json()).code, "validation_error");
 });
 
-test("provider-backed operations never return false success without a receipt", async () => {
+test("client merge rejects incomplete selections instead of returning false success", async () => {
   const request = new Request("https://preview.example/api/simon/v3/clients/merge", {
     method: "POST",
     headers: headers({ "content-type": "application/json", "idempotency-key": "merge-provider-guard-0001" }),
@@ -241,9 +290,100 @@ test("provider-backed operations never return false success without a receipt", 
   });
   const response = await onRequest(context(request));
   const body = await response.json();
-  assert.equal(response.status, 502);
-  assert.equal(body.code, "provider_failure");
-  assert.equal(typeof body.operation_id, "string");
+  assert.equal(response.status, 400);
+  assert.equal(body.code, "validation_error");
+});
+
+test("client merge atomically reassigns records, preserves identities, and rolls back safely", async () => {
+  const db = statefulCalendarDb();
+  const sourceId = "41414141-4141-4414-8414-414141414141";
+  const targetId = "42424242-4242-4424-8424-424242424242";
+  const applicationId = "43434343-4343-4434-8434-434343434343";
+  const fileId = "44444444-4444-4444-8444-444444444444";
+  const timestamp = new Date().toISOString();
+  const original = [
+    {
+      id: sourceId, kind: "client", version: 1, state: "active", owner_person_id: sourceId,
+      data_json: JSON.stringify({ id: sourceId, owner_person_id: sourceId, name: "Source Name", email: "source@example.test", artist_name: "Night Bloom" }),
+      archived: 0, created_at: timestamp, updated_at: timestamp,
+    },
+    {
+      id: targetId, kind: "client", version: 1, state: "active", owner_person_id: targetId,
+      data_json: JSON.stringify({ id: targetId, owner_person_id: targetId, name: "Target Name", email: "target@example.test", artist_name: "Moon Room" }),
+      archived: 0, created_at: timestamp, updated_at: timestamp,
+    },
+    {
+      id: applicationId, kind: "application", version: 1, state: "draft", owner_person_id: sourceId,
+      data_json: JSON.stringify({ id: applicationId, owner_person_id: sourceId, summary: "Preserved project" }),
+      archived: 0, created_at: timestamp, updated_at: timestamp,
+    },
+    {
+      id: fileId, kind: "file", version: 1, state: "ready", owner_person_id: sourceId,
+      data_json: JSON.stringify({ id: fileId, owner_person_id: sourceId, target_record_kind: "client", target_record_id: sourceId, checksum_sha256: "a".repeat(64) }),
+      archived: 0, created_at: timestamp, updated_at: timestamp,
+    },
+  ];
+  for (const row of original) db.resources.set(row.id, { ...row });
+  const env = { APPLICATIONS_DB: db, SIMON_V3_SERVICE_TOKEN: "staging-token" };
+  const mergeRequest = (key, sourceVersion, targetVersion, resolutions) => new Request(
+    "https://preview.example/api/simon/v3/clients/merge",
+    {
+      method: "POST",
+      headers: headers({ "content-type": "application/json", "idempotency-key": key }),
+      body: JSON.stringify({ actor, reason: "merge two explicitly selected duplicate clients", data: {
+        source_client_id: sourceId, target_client_id: targetId,
+        source_version: sourceVersion, target_version: targetVersion,
+        field_resolutions: resolutions,
+      } }),
+    },
+  );
+  const unresolved = await onRequest(context(mergeRequest("client-merge-unresolved-0001", 1, 1, {}), env));
+  assert.equal(unresolved.status, 409);
+  assert.deepEqual((await unresolved.json()).conflicting_fields, ["artist_name", "email", "name"]);
+  assert.equal(db.operations.size, 0);
+
+  const resolutions = { name: "target", email: "source", artist_name: "target" };
+  const mergedResponse = await onRequest(context(mergeRequest("client-merge-complete-0002", 1, 1, resolutions), env));
+  assert.equal(mergedResponse.status, 202);
+  const mergedOperation = await mergedResponse.json();
+  assert.equal(mergedOperation.status, "succeeded");
+  assert.equal(mergedOperation.rollback.available, true);
+  assert.equal(db.resources.get(sourceId).state, "archived");
+  assert.equal(db.resources.get(sourceId).archived, 1);
+  assert.equal(db.resources.get(sourceId).owner_person_id, targetId);
+  const targetData = JSON.parse(db.resources.get(targetId).data_json);
+  assert.equal(targetData.name, "Target Name");
+  assert.equal(targetData.email, "source@example.test");
+  assert.deepEqual(targetData.artist_identities, ["Moon Room", "Night Bloom"]);
+  assert.equal(db.resources.get(applicationId).owner_person_id, targetId);
+  assert.equal(JSON.parse(db.resources.get(applicationId).data_json).owner_person_id, targetId);
+  assert.equal(JSON.parse(db.resources.get(fileId).data_json).target_record_id, targetId);
+
+  const rollbackRequest = (operationId, key) => new Request(
+    `https://preview.example/api/simon/v3/operations/${operationId}/rollback`,
+    {
+      method: "POST",
+      headers: headers({ "content-type": "application/json", "idempotency-key": key }),
+      body: JSON.stringify({ actor, reason: "roll back the isolated client merge", data: {} }),
+    },
+  );
+  const rolledBack = await onRequest(context(rollbackRequest(mergedOperation.id, "client-merge-rollback-0003"), env));
+  assert.equal(rolledBack.status, 202);
+  assert.equal((await rolledBack.json()).status, "rolled_back");
+  assert.equal(db.resources.get(sourceId).state, "active");
+  assert.equal(db.resources.get(sourceId).archived, 0);
+  assert.equal(db.resources.get(sourceId).owner_person_id, sourceId);
+  assert.equal(db.resources.get(applicationId).owner_person_id, sourceId);
+  assert.equal(JSON.parse(db.resources.get(fileId).data_json).target_record_id, sourceId);
+
+  const mergedAgain = await onRequest(context(mergeRequest("client-merge-stale-0004", 3, 3, resolutions), env));
+  assert.equal(mergedAgain.status, 202);
+  const secondOperation = await mergedAgain.json();
+  db.resources.get(applicationId).version += 1;
+  const staleRollback = await onRequest(context(rollbackRequest(secondOperation.id, "client-merge-stale-rollback-0005"), env));
+  assert.equal(staleRollback.status, 409);
+  assert.equal((await staleRollback.json()).code, "version_conflict");
+  assert.equal(db.resources.get(sourceId).state, "archived");
 });
 
 test("staging calendar availability returns only busy-safe fields with evidence", async (t) => {
