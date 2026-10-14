@@ -119,6 +119,15 @@ const statefulCalendarDb = () => {
           return null;
         },
         async all() {
+          if (sql.includes("retention_expires_at")) {
+            const cutoff = Date.parse(this.values[0]);
+            return { results: [...resources.values()].filter((row) => {
+              if (row.kind !== "file" || !["ready", "expiring"].includes(row.state)) return false;
+              const data = JSON.parse(row.data_json);
+              return data.scan_state === "clean"
+                && Date.parse(data.retention_expires_at || "") <= cutoff;
+            }).slice(0, 25) };
+          }
           if (sql.includes("kind = 'ledger_entry'")) {
             return { results: [...resources.values()].filter((row) => (
               row.kind === "ledger_entry" && JSON.parse(row.data_json).booking_id === this.values[0]
@@ -159,9 +168,9 @@ const context = (request, env = {}) => ({
 });
 
 test("Simon V3 route table covers every formal operation exactly once", () => {
-  assert.equal(SIMON_V3_ROUTES.length, 62);
-  assert.equal(SIMON_V3_ROUTES.filter((route) => route.mode === "mutation").length, 35);
-  assert.equal(new Set(SIMON_V3_ROUTES.map((route) => route.operationId)).size, 62);
+  assert.equal(SIMON_V3_ROUTES.length, 64);
+  assert.equal(SIMON_V3_ROUTES.filter((route) => route.mode === "mutation").length, 36);
+  assert.equal(new Set(SIMON_V3_ROUTES.map((route) => route.operationId)).size, 64);
 });
 
 test("route matching preserves contract operation IDs and path parameters", () => {
@@ -1022,7 +1031,7 @@ test("file intake accepts matching clean receipts and purges confirmed malware",
     }),
     body: JSON.stringify({ actor, reason: "record a matching ClamAV scan receipt", data: {
       scanner: "clamav", scanner_version: "1.5.4", signature_version: "daily-28153",
-      checksum_sha256: checksum, verdict: "clean", scanned_at: timestamp,
+      checksum_sha256: checksum, verdict: "clean", scanned_at: "2026-01-31T12:00:00.000Z",
     } }),
   });
   const cleanResponse = await onRequest(context(cleanReceipt, env));
@@ -1032,9 +1041,45 @@ test("file intake accepts matching clean receipts and purges confirmed malware",
   assert.equal(scanned.state, "ready");
   assert.equal(JSON.parse(scanned.data_json).scan_state, "clean");
   assert.equal(JSON.parse(scanned.data_json).usable, true);
+  assert.equal(JSON.parse(scanned.data_json).retention_policy, "clean-private-file-6-calendar-months-v1");
+  assert.equal(JSON.parse(scanned.data_json).retention_expires_at, "2026-07-31T12:00:00.000Z");
   const scanOperation = await cleanResponse.json();
   assert.equal(scanOperation.steps.at(-1).name, "malware_scan");
   assert.equal(scanOperation.steps.at(-1).provider_confirmed, true);
+
+  const dueRequest = new Request(`https://preview.example/api/simon/v3/files/retention-due?before=${encodeURIComponent(new Date().toISOString())}`, {
+    headers: headers(),
+  });
+  const dueResponse = await onRequest(context(dueRequest, env));
+  assert.equal(dueResponse.status, 200);
+  const dueBody = await dueResponse.json();
+  assert.equal(dueBody.items.length, 1);
+  assert.equal(dueBody.items[0].id, fileId);
+  assert.equal("private_storage_ref" in dueBody.items[0].data, false);
+
+  const expireRequest = new Request(`https://preview.example/api/simon/v3/files/${fileId}/expire`, {
+    method: "POST",
+    headers: headers({
+      "content-type": "application/json",
+      "idempotency-key": "clean-file-retention-expiration-0001",
+      "if-match": "2",
+    }),
+    body: JSON.stringify({ actor, reason: "apply the approved six-month clean-file retention rule", data: {} }),
+  });
+  const expireResponse = await onRequest(context(expireRequest, env));
+  assert.equal(expireResponse.status, 202);
+  const expired = db.resources.get(fileId);
+  const expiredData = JSON.parse(expired.data_json);
+  assert.equal(expired.version, 4);
+  assert.equal(expired.state, "expired");
+  assert.equal(expiredData.usable, false);
+  assert.equal(expiredData.private_storage_ref, null);
+  assert.equal(expiredData.retention_receipt.bytes_deleted, true);
+  assert.equal(expiredData.checksum_sha256, checksum);
+  assert.equal(objects.size, 0);
+  const expirationOperation = await expireResponse.json();
+  assert.equal(expirationOperation.steps.at(-1).name, "private_file_retention_purge");
+  assert.equal(expirationOperation.steps.at(-1).provider_confirmed, true);
 
   const maliciousFileId = "17171717-1717-4717-8717-171717171717";
   const eicar = new TextEncoder().encode([
@@ -1054,7 +1099,7 @@ test("file intake accepts matching clean receipts and purges confirmed malware",
     } }),
   });
   assert.equal((await onRequest(context(maliciousIntake, env))).status, 202);
-  assert.equal(objects.size, 2);
+  assert.equal(objects.size, 1);
 
   const maliciousReceipt = new Request(`https://preview.example/api/simon/v3/files/${maliciousFileId}/scan-results`, {
     method: "POST",
@@ -1075,8 +1120,54 @@ test("file intake accepts matching clean receipts and purges confirmed malware",
   assert.equal(malicious.usable, false);
   assert.equal(malicious.private_storage_ref, null);
   assert.ok(malicious.purged_at);
-  assert.equal(objects.size, 1);
+  assert.equal(objects.size, 0);
   const maliciousOperation = await maliciousResponse.json();
   assert.equal(maliciousOperation.steps.at(-1).name, "private_quarantine_purge");
   assert.equal(maliciousOperation.steps.at(-1).provider_confirmed, true);
+});
+
+test("retention failure revokes access before retrying private-byte deletion", async () => {
+  const db = statefulCalendarDb();
+  const fileId = "18181818-1818-4818-8818-181818181818";
+  const storageKey = `simon-v3/quarantine/${PERSON_ID}/${fileId}/old.txt`;
+  const timestamp = new Date().toISOString();
+  db.resources.set(fileId, {
+    id: fileId, kind: "file", version: 2, state: "ready", owner_person_id: PERSON_ID,
+    data_json: JSON.stringify({
+      id: fileId, scan_state: "clean", state: "ready", usable: true,
+      checksum_sha256: "a".repeat(64), private_storage_ref: storageKey,
+      retention_policy: "clean-private-file-6-calendar-months-v1",
+      retention_expires_at: "2026-01-01T00:00:00.000Z",
+    }),
+    archived: 0, created_at: timestamp, updated_at: timestamp,
+  });
+  let stored = true;
+  let failDelete = true;
+  const bucket = {
+    async head() { return stored ? { size: 3, etag: "old" } : null; },
+    async delete() {
+      if (failDelete) throw new Error("simulated deletion failure");
+      stored = false;
+    },
+  };
+  const env = { APPLICATIONS_DB: db, APPLICATION_UPLOADS: bucket, SIMON_V3_SERVICE_TOKEN: "staging-token" };
+  const request = (key, version) => new Request(`https://preview.example/api/simon/v3/files/${fileId}/expire`, {
+    method: "POST",
+    headers: headers({ "content-type": "application/json", "idempotency-key": key, "if-match": String(version) }),
+    body: JSON.stringify({ actor, reason: "expire a due clean file", data: {} }),
+  });
+
+  const failed = await onRequest(context(request("retention-failure-safe-0001", 2), env));
+  assert.equal(failed.status, 502);
+  assert.equal(db.resources.get(fileId).state, "expiring");
+  assert.equal(db.resources.get(fileId).version, 3);
+  assert.equal(JSON.parse(db.resources.get(fileId).data_json).usable, false);
+  assert.equal(stored, true);
+
+  failDelete = false;
+  const retried = await onRequest(context(request("retention-failure-retry-0002", 3), env));
+  assert.equal(retried.status, 202);
+  assert.equal(db.resources.get(fileId).state, "expired");
+  assert.equal(db.resources.get(fileId).version, 4);
+  assert.equal(stored, false);
 });

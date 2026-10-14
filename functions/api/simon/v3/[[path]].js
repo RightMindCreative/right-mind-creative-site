@@ -16,6 +16,20 @@ import {
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
 const now = () => new Date().toISOString();
+const CLEAN_FILE_RETENTION_POLICY = "clean-private-file-6-calendar-months-v1";
+
+const addUtcCalendarMonths = (value, months) => {
+  const source = new Date(value);
+  if (Number.isNaN(source.getTime()) || !Number.isInteger(months) || months < 1) return null;
+  const targetMonthIndex = source.getUTCMonth() + months;
+  const targetYear = source.getUTCFullYear() + Math.floor(targetMonthIndex / 12);
+  const targetMonth = ((targetMonthIndex % 12) + 12) % 12;
+  const finalDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(
+    targetYear, targetMonth, Math.min(source.getUTCDate(), finalDay),
+    source.getUTCHours(), source.getUTCMinutes(), source.getUTCSeconds(), source.getUTCMilliseconds(),
+  )).toISOString();
+};
 
 const routeId = (route) => {
   for (const key of ["client_id", "employee_id", "application_id", "booking_id", "hold_id", "assignment_id", "file_id", "notification_id"]) {
@@ -333,6 +347,9 @@ const readResource = async (context, route, actor, traceId) => {
   }
   if (route.operationId === "getFileMetadata") {
     return getFileMetadata(context, route, actor, traceId);
+  }
+  if (route.operationId === "listFilesDueForRetention") {
+    return listFilesDueForRetention(context, route, actor, traceId);
   }
   if (route.provider) {
     await auditRead(context, route, actor, traceId, routeId(route), "failed");
@@ -1262,6 +1279,35 @@ const getFileMetadata = async (context, route, actor, traceId) => {
   return jsonResponse({ id: row.id, kind: "file", version: Number(row.version), data, evidence_refs: [] });
 };
 
+const listFilesDueForRetention = async (context, route, actor, traceId) => {
+  const before = clean(new URL(context.request.url).searchParams.get("before"), 40);
+  const beforeTime = Date.parse(before);
+  if (Number.isNaN(beforeTime) || beforeTime > Date.now() + 5 * 60 * 1000) {
+    return problem(400, "validation_error", "A current or past retention cutoff is required", traceId);
+  }
+  const result = await context.env.APPLICATIONS_DB.prepare(`
+    SELECT * FROM simon_v3_resources
+    WHERE kind = 'file' AND archived = 0 AND state IN ('ready', 'expiring')
+      AND json_extract(data_json, '$.scan_state') = 'clean'
+      AND json_extract(data_json, '$.retention_expires_at') <= ?
+    ORDER BY json_extract(data_json, '$.retention_expires_at') ASC LIMIT 25
+  `).bind(new Date(beforeTime).toISOString()).all();
+  const items = (result.results || []).map((row) => {
+    const data = JSON.parse(row.data_json);
+    return {
+      id: row.id, kind: "file", version: Number(row.version),
+      data: {
+        state: row.state, scan_state: data.scan_state, usable: data.usable,
+        retention_policy: data.retention_policy,
+        retention_expires_at: data.retention_expires_at,
+      },
+      evidence_refs: [],
+    };
+  });
+  await auditRead(context, route, actor, traceId, null, "succeeded");
+  return jsonResponse({ items, next_cursor: null });
+};
+
 const completePaymentOperation = async (db, {
   operationId, route, actor, traceId, refs, steps, after = null, statements = [], resourceId,
 }) => {
@@ -1777,6 +1823,11 @@ const mutateFileScanResult = async (
       scanned_at: new Date(scannedTime).toISOString(),
     },
   };
+  if (verdict === "clean") {
+    data.clean_promoted_at = new Date(scannedTime).toISOString();
+    data.retention_policy = CLEAN_FILE_RETENTION_POLICY;
+    data.retention_expires_at = addUtcCalendarMonths(scannedTime, 6);
+  }
   const refs = [{ kind: "file", id: current.id, version }];
   await beginProviderOperation(context.env.APPLICATIONS_DB, {
     id: operationId, route, key, requestHash, traceId, actor,
@@ -1822,6 +1873,95 @@ const mutateFileScanResult = async (
     statements: [context.env.APPLICATIONS_DB.prepare(`UPDATE simon_v3_resources SET version = ?,
       state = ?, data_json = ?, updated_at = ? WHERE id = ?`)
       .bind(version, state, JSON.stringify(data), timestamp, current.id)],
+  });
+};
+
+const mutateFileRetentionExpiration = async (
+  context, route, actor, traceId, key, requestHash, body, current,
+) => {
+  if (!hasOnlyKeys(body.data, [])) {
+    return problem(400, "validation_error", "File expiration does not accept mutable fields", traceId);
+  }
+  const currentData = JSON.parse(current.data_json);
+  const expiresAt = Date.parse(currentData.retention_expires_at || "");
+  if (currentData.scan_state !== "clean"
+      || !["ready", "expiring"].includes(current.state)
+      || currentData.retention_policy !== CLEAN_FILE_RETENTION_POLICY
+      || Number.isNaN(expiresAt)) {
+    return problem(409, "retention_state_conflict", "Only a policy-bound clean file can expire", traceId);
+  }
+  if (expiresAt > Date.now()) {
+    return problem(409, "retention_not_due", "The clean-file retention period has not ended", traceId);
+  }
+  if (!context.env.APPLICATION_UPLOADS || !currentData.private_storage_ref) {
+    return problem(503, "provider_failure", "Private storage is not configured for retention expiration", traceId);
+  }
+
+  const timestamp = now();
+  const startedReady = current.state === "ready";
+  const expiringVersion = Number(current.version) + (startedReady ? 1 : 0);
+  const finalVersion = expiringVersion + 1;
+  const expiringData = {
+    ...currentData,
+    state: "expiring",
+    usable: false,
+    retention_expiration_started_at: currentData.retention_expiration_started_at || timestamp,
+  };
+  const operationId = crypto.randomUUID();
+  const refs = [{ kind: "file", id: current.id, version: finalVersion }];
+  await beginProviderOperation(context.env.APPLICATIONS_DB, {
+    id: operationId, route, key, requestHash, traceId, actor,
+    resourceRefs: refs, before: JSON.stringify(resourceFromRow(current)),
+  });
+  const steps = [];
+  if (startedReady) {
+    await context.env.APPLICATIONS_DB.prepare(`UPDATE simon_v3_resources SET version = ?,
+      state = 'expiring', data_json = ?, updated_at = ? WHERE id = ?`)
+      .bind(expiringVersion, JSON.stringify(expiringData), timestamp, current.id).run();
+    steps.push({
+      name: "retention_access_revoke", status: "succeeded", provider_confirmed: true,
+      provider_receipt_ref: current.id, retry_safe: true, error: null,
+    });
+  }
+  try {
+    if (await context.env.APPLICATION_UPLOADS.head(currentData.private_storage_ref)) {
+      await context.env.APPLICATION_UPLOADS.delete(currentData.private_storage_ref);
+    }
+    if (await context.env.APPLICATION_UPLOADS.head(currentData.private_storage_ref)) {
+      throw new Error("retention_purge_not_confirmed");
+    }
+  } catch {
+    await failProviderOperation(context.env.APPLICATIONS_DB, {
+      id: operationId, route, actor, traceId, resourceId: current.id,
+    });
+    return problem(
+      502, "provider_failure", "Private file retention removal was not confirmed",
+      traceId, "The file is unavailable and will remain queued for safe retry.",
+      { operation_id: operationId },
+    );
+  }
+  const expiredData = {
+    ...expiringData,
+    state: "expired",
+    private_storage_ref: null,
+    expired_at: timestamp,
+    retention_receipt: {
+      policy: CLEAN_FILE_RETENTION_POLICY,
+      bytes_deleted: true,
+      checksum_sha256: currentData.checksum_sha256,
+      deleted_at: timestamp,
+    },
+  };
+  steps.push({
+    name: "private_file_retention_purge", status: "succeeded", provider_confirmed: true,
+    provider_receipt_ref: current.id, retry_safe: true, error: null,
+  });
+  return completePaymentOperation(context.env.APPLICATIONS_DB, {
+    operationId, route, actor, traceId, refs, resourceId: current.id,
+    steps, after: JSON.stringify(expiredData),
+    statements: [context.env.APPLICATIONS_DB.prepare(`UPDATE simon_v3_resources SET version = ?,
+      state = 'expired', data_json = ?, updated_at = ? WHERE id = ?`)
+      .bind(finalVersion, JSON.stringify(expiredData), timestamp, current.id)],
   });
 };
 
@@ -2119,6 +2259,11 @@ const mutate = async (context, route, actor, traceId) => {
   }
   if (route.operationId === "recordFileScanResult") {
     return mutateFileScanResult(
+      context, route, actor, traceId, idempotencyKey, requestHash, body, current,
+    );
+  }
+  if (route.operationId === "expireFileForRetention") {
+    return mutateFileRetentionExpiration(
       context, route, actor, traceId, idempotencyKey, requestHash, body, current,
     );
   }
