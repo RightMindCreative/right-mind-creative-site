@@ -129,7 +129,7 @@ export const authenticateSimonV3 = (request, env) => {
   if (!env.APPLICATIONS_DB || (!env.SIMON_V3_SERVICE_TOKEN && !env.SIMON_V3_SHADOW_TOKEN)
       || (env.SIMON_V3_SERVICE_TOKEN && env.SIMON_V3_SHADOW_TOKEN
         && same(env.SIMON_V3_SERVICE_TOKEN, env.SIMON_V3_SHADOW_TOKEN))) {
-    return { error: problem(503, "provider_failure", "Simon V3 staging is not configured", traceId) };
+    return { error: problem(503, "provider_failure", "Simon V3 is not configured", traceId) };
   }
   const bearer = (request.headers.get("authorization") || "").match(/^Bearer\s+(.+)$/i)?.[1] || "";
   const serviceAuthenticated = same(bearer, env.SIMON_V3_SERVICE_TOKEN || "");

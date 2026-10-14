@@ -518,6 +518,29 @@ test("dependency health confirms Stripe test mode without exposing account data"
   assert.equal(JSON.stringify(body).includes("private-test-key"), false);
 });
 
+test("production dependency health accepts live Stripe only in production", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => new Response(JSON.stringify({ livemode: true }), {
+    status: 200, headers: { "content-type": "application/json" },
+  });
+  const request = new Request("https://www.rightmindcreative.co/api/simon/v3/health", {
+    headers: headers(),
+  });
+  const response = await onRequest(context(request, {
+    STRIPE_SECRET_KEY: "private-live-key",
+    SIMON_V3_ENVIRONMENT: "production",
+  }));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  const stripe = body.items.find((item) => item.data.dependency === "stripe");
+  assert.deepEqual(stripe.data, {
+    dependency: "stripe", state: "ready", mode: "live", environment: "production",
+  });
+  assert.equal(body.items.every((item) => item.data.environment === "production"), true);
+  assert.equal(JSON.stringify(body).includes("private-live-key"), false);
+});
+
 test("staging calendar hold create and cancel require confirmed provider receipts", async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });

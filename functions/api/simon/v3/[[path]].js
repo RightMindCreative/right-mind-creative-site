@@ -255,6 +255,8 @@ const readSpecial = async (context, route, actor, traceId) => {
   if (route.special === "catalog") return jsonResponse(catalog());
   if (route.special === "policies") return jsonResponse(policies());
   if (route.special === "health") {
+    const environment = context.env.SIMON_V3_ENVIRONMENT === "production"
+      ? "production" : "staging";
     const latestCalendar = await db.prepare(`
       SELECT evidence_json, created_at FROM simon_v3_events
       WHERE action = 'checkAvailability' AND outcome = 'succeeded'
@@ -274,14 +276,14 @@ const readSpecial = async (context, route, actor, traceId) => {
     try {
       stripe = await getStripeHealth(context.env);
     } catch (error) {
-      console.error("Simon V3 staging Stripe health check failed safely", {
+      console.error("Simon V3 Stripe health check failed safely", {
         error_type: clean(error?.name, 80) || "Error",
       });
     }
     const items = [
-      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "d1", state: "ready", environment: "staging" }, evidence_refs: [] },
-      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "google_calendar", state: calendarVerified ? "ready" : "not_verified", environment: "staging", verified_at: latestCalendar?.created_at || null }, evidence_refs: [] },
-      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "stripe", state: stripe.state, mode: stripe.mode, environment: "staging" }, evidence_refs: [] },
+      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "d1", state: "ready", environment }, evidence_refs: [] },
+      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "google_calendar", state: calendarVerified ? "ready" : "not_verified", environment, verified_at: latestCalendar?.created_at || null }, evidence_refs: [] },
+      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "stripe", state: stripe.state, mode: stripe.mode, environment }, evidence_refs: [] },
     ];
     await auditRead(context, route, actor, traceId, null, "succeeded");
     return jsonResponse({ items, next_cursor: null });
