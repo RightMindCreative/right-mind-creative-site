@@ -69,15 +69,7 @@ export async function deliverStagingNotificationProbe(
   });
   if (!send.ok) throw new Error("gmail_send_not_confirmed");
   const sent = await send.json();
-  if (!sent?.id) throw new Error("gmail_send_receipt_missing");
-
-  const verify = await fetchImpl(
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(sent.id)}?format=minimal`,
-    { headers: { authorization: `Bearer ${accessToken}` } },
-  );
-  if (!verify.ok) throw new Error("gmail_receipt_not_verified");
-  const verified = await verify.json();
-  if (verified?.id !== sent.id || !verified?.labelIds?.includes("SENT")) {
+  if (!sent?.id || !sent?.labelIds?.includes("SENT")) {
     throw new Error("gmail_receipt_not_verified");
   }
   return {

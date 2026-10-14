@@ -789,9 +789,6 @@ test("staging notification probe records a verified Gmail receipt without client
       const payload = JSON.parse(options.body);
       assert.match(payload.raw, /^[A-Za-z0-9_-]+$/);
       assert.equal(String(options.headers.authorization), "Bearer test-token");
-      return new Response(JSON.stringify({ id: "gmail-staging-receipt" }), { status: 200 });
-    }
-    if (target.includes("/messages/gmail-staging-receipt?format=minimal")) {
       return new Response(JSON.stringify({
         id: "gmail-staging-receipt", labelIds: ["SENT"],
       }), { status: 200 });
