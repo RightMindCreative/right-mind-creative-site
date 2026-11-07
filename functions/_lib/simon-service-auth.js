@@ -10,12 +10,16 @@ const same = (left, right) => {
 };
 
 export const requireSimonService = (context) => {
-  if (!context.env.APPLICATIONS_DB || !context.env.SIMON_SERVICE_TOKEN) {
+  const acceptedTokens = [
+    context.env.SIMON_SERVICE_TOKEN,
+    context.env.RMC_CLIENT_SERVICE_TOKEN,
+  ].map((value) => String(value || "")).filter(Boolean);
+  if (!context.env.APPLICATIONS_DB || !acceptedTokens.length) {
     return json({ error: "The Simon service API is not configured." }, 503);
   }
   const header = context.request.headers.get("authorization") || "";
   const token = header.match(/^Bearer\s+(.+)$/i)?.[1] || "";
-  if (!same(token, String(context.env.SIMON_SERVICE_TOKEN))) {
+  if (!acceptedTokens.some((candidate) => same(token, candidate))) {
     return json({ error: "Service authentication required." }, 401);
   }
   return null;

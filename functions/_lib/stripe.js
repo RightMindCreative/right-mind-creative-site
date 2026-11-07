@@ -85,7 +85,7 @@ export const getSimonRefund = async (env, refundId) => stripeRequest(
   env, `/refunds/${encodeURIComponent(refundId)}`,
 );
 
-export const createDepositCheckout = async (env, application, origin) => {
+export const createDepositCheckout = async (env, application, origin, idempotencyKey = "") => {
   const statusUrl = `${origin}/application-status?token=${encodeURIComponent(application.public_status_token)}`;
   const form = new URLSearchParams({
     mode: "payment",
@@ -105,6 +105,7 @@ export const createDepositCheckout = async (env, application, origin) => {
     headers: {
       authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
       "content-type": "application/x-www-form-urlencoded",
+      ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
     },
     body: form,
   });
@@ -130,6 +131,19 @@ export const refundDeposit = async (env, application) => {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error?.message || `Stripe refund failed (${response.status}).`);
+  return result;
+};
+
+export const expireDepositCheckout = async (env, sessionId) => {
+  if (!sessionId) return null;
+  const response = await fetch(`${STRIPE_API}/checkout/sessions/${encodeURIComponent(sessionId)}/expire`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+  });
+  const result = await response.json();
+  if (!response.ok && result.error?.code !== "checkout_session_not_open") {
+    throw new Error(result.error?.message || `Stripe request failed (${response.status}).`);
+  }
   return result;
 };
 

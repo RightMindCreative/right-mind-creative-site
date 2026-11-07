@@ -6,6 +6,10 @@ import { addApplicationToCalendar } from "../functions/_lib/application-notifica
 import { decisionCopyFor } from "../functions/_lib/decision-email.js";
 import { requireSimonService } from "../functions/_lib/simon-service-auth.js";
 import {
+  applicationMatchesIdentity,
+  clientApplicationSummary,
+} from "../functions/_lib/client-applications.js";
+import {
   bookingSummary, SIMON_APPLICATION_STATUS, SIMON_PAYMENT_STATUS, simonPaymentIsConfigured,
 } from "../functions/api/simon/bookings.js";
 import { artistSummary, normalizedPhone } from "../functions/api/simon/artists.js";
@@ -63,11 +67,48 @@ test("correct scoped service credential is accepted", () => {
   assert.equal(requireSimonService(context("Bearer test-service-token")), null);
 });
 
+test("the mobile worker can use its own scoped service credential", () => {
+  assert.equal(requireSimonService(context("Bearer mobile-service-token", {
+    RMC_CLIENT_SERVICE_TOKEN: "mobile-service-token",
+  })), null);
+  assert.equal(requireSimonService(context("Bearer wrong-token", {
+    RMC_CLIENT_SERVICE_TOKEN: "mobile-service-token",
+  })).status, 401);
+});
+
 test("unconfigured service boundary fails closed", () => {
   const response = requireSimonService(context("Bearer test-service-token", {
     SIMON_SERVICE_TOKEN: "",
   }));
   assert.equal(response.status, 503);
+});
+
+test("mobile application lookup matches verified email or normalized phone", () => {
+  const application = {
+    email: "client@example.com", phone: "+1 (402) 555-0100",
+  };
+  assert.equal(applicationMatchesIdentity(application, { email: "CLIENT@example.com" }), true);
+  assert.equal(applicationMatchesIdentity(application, { phone: "4025550100" }), true);
+  assert.equal(applicationMatchesIdentity(application, { email: "other@example.com" }), false);
+});
+
+test("mobile application summaries omit private status tokens and contact details", () => {
+  const summary = clientApplicationSummary({
+    id: "app-1", created_at: "2026-09-01T12:00:00.000Z", updated_at: null,
+    status: "payment_pending", category: "recording", service: "Vocal Recording Session",
+    service_option: "2 hours", preferred_date: "2026-09-10", preferred_time: "2:00 PM",
+    artist_name: "Roo", email: "private@example.com", phone: "+14025550100",
+    notes: "Need the Neumann setup.",
+    public_status_token: "private-token", deposit_amount_cents: 10000,
+    deposit_currency: "usd", deposit_status: "pending", deposit_paid_at: null,
+  });
+  assert.equal(summary.durationMinutes, 120);
+  assert.match(summary.startsAt, /^2026-09-10T/);
+  assert.equal(summary.depositAmountCents, 10000);
+  assert.equal(summary.notes, "Need the Neumann setup.");
+  assert.equal("email" in summary, false);
+  assert.equal("phone" in summary, false);
+  assert.equal("publicStatusToken" in summary, false);
 });
 
 test("owner-confirmed Simon requests create approved applications", () => {
