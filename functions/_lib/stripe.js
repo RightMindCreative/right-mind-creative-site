@@ -2,6 +2,14 @@ const STRIPE_API = "https://api.stripe.com/v1";
 
 export const stripeIsConfigured = (env) => Boolean(env.STRIPE_SECRET_KEY);
 
+const stripeModePolicy = (env, livemode) => {
+  const environment = env.SIMON_V3_ENVIRONMENT === "production" ? "production" : "staging";
+  const mode = livemode === true ? "live" : "test";
+  const ready = (environment === "production" && livemode === true)
+    || (environment === "staging" && livemode === false);
+  return { environment, mode, ready };
+};
+
 export const getStripeHealth = async (env) => {
   if (!stripeIsConfigured(env)) return { state: "not_configured", mode: null };
   const response = await fetch(`${STRIPE_API}/balance`, {
@@ -9,10 +17,8 @@ export const getStripeHealth = async (env) => {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(`Stripe health request failed (${response.status}).`);
-  return {
-    state: result.livemode === false ? "ready" : "unsafe_live_mode",
-    mode: result.livemode === false ? "test" : "live",
-  };
+  const policy = stripeModePolicy(env, result.livemode === true);
+  return { state: policy.ready ? "ready" : "unsafe_mode", mode: policy.mode };
 };
 
 const stripeRequest = async (env, path, { method = "GET", body, idempotencyKey } = {}) => {
@@ -28,7 +34,8 @@ const stripeRequest = async (env, path, { method = "GET", body, idempotencyKey }
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error?.message || `Stripe request failed (${response.status}).`);
-  if (result.livemode !== false) throw new Error("Simon V3 staging refuses live-mode Stripe objects.");
+  const policy = stripeModePolicy(env, result.livemode === true);
+  if (!policy.ready) throw new Error(`Simon V3 ${policy.environment} refuses ${policy.mode}-mode Stripe objects.`);
   return result;
 };
 
