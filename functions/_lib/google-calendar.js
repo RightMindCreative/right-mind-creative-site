@@ -195,4 +195,5 @@ export const deleteCalendarEvent = async (env, eventId) => {
     const detail = await response.text();
     throw new Error(`Google event deletion failed (${response.status}): ${detail.slice(0, 500)}`);
   }
+  return { status: response.status };
 };

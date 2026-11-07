@@ -160,8 +160,44 @@
         "operationId": "listActiveApplications",
         "x-access-tier": "companion-server",
         "security": [{ "ServiceBearer": [] }],
-        "summary": "List the ten newest active applications",
+        "summary": "List active applications, or client-safe history for an exact verified identity",
+        "parameters": [
+          { "name": "email", "in": "query", "required": false, "schema": { "type": "string", "format": "email" } },
+          { "name": "phone", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
         "responses": { "200": { "description": "Active applications" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/simon/applications/{id}/cancel": {
+      "post": {
+        "tags": ["Studio companion service"],
+        "operationId": "cancelClientApplication",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Cancel an unpaid application for a server-verified client identity",
+        "parameters": [
+          { "$ref": "#/components/parameters/ApplicationId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" },
+          { "$ref": "#/components/parameters/RequestId" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExpectedClientIdentity" } } } },
+        "responses": { "200": { "description": "Application cancelled" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/simon/applications/{id}/checkout": {
+      "post": {
+        "tags": ["Studio companion service"],
+        "operationId": "createClientDepositCheckout",
+        "x-access-tier": "companion-server",
+        "security": [{ "ServiceBearer": [] }],
+        "summary": "Create an idempotent deposit checkout for a server-verified client identity",
+        "parameters": [
+          { "$ref": "#/components/parameters/ApplicationId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" },
+          { "$ref": "#/components/parameters/RequestId" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExpectedClientIdentity" } } } },
+        "responses": { "200": { "description": "Secure Stripe Checkout URL" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
       }
     },
     "/api/simon/applications/{id}/decision": {
@@ -455,6 +491,14 @@
           "phone": { "type": "string" },
           "email": { "type": "string", "format": "email" }
         }
+      },
+      "ExpectedClientIdentity": {
+        "type": "object",
+        "properties": {
+          "expectedEmail": { "type": "string", "format": "email" },
+          "expectedPhone": { "type": "string" }
+        },
+        "description": "Trusted server assertions. At least one verified account identifier is required."
       },
       "PrivilegedBookingCreate": {
         "type": "object",

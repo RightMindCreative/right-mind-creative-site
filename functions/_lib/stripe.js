@@ -2,7 +2,90 @@ const STRIPE_API = "https://api.stripe.com/v1";
 
 export const stripeIsConfigured = (env) => Boolean(env.STRIPE_SECRET_KEY);
 
-export const createDepositCheckout = async (env, application, origin) => {
+export const getStripeHealth = async (env) => {
+  if (!stripeIsConfigured(env)) return { state: "not_configured", mode: null };
+  const response = await fetch(`${STRIPE_API}/balance`, {
+    headers: { authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(`Stripe health request failed (${response.status}).`);
+  return {
+    state: result.livemode === false ? "ready" : "unsafe_live_mode",
+    mode: result.livemode === false ? "test" : "live",
+  };
+};
+
+const stripeRequest = async (env, path, { method = "GET", body, idempotencyKey } = {}) => {
+  if (!stripeIsConfigured(env)) throw new Error("Stripe is not configured.");
+  const response = await fetch(`${STRIPE_API}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
+      ...(body ? { "content-type": "application/x-www-form-urlencoded" } : {}),
+      ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
+    },
+    ...(body ? { body: new URLSearchParams(body) } : {}),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error?.message || `Stripe request failed (${response.status}).`);
+  if (result.livemode !== false) throw new Error("Simon V3 staging refuses live-mode Stripe objects.");
+  return result;
+};
+
+export const createSimonPaymentCheckout = async (env, input) => stripeRequest(
+  env,
+  "/checkout/sessions",
+  {
+    method: "POST",
+    idempotencyKey: input.idempotencyKey,
+    body: {
+      mode: "payment",
+      success_url: input.successUrl,
+      cancel_url: input.cancelUrl,
+      client_reference_id: input.bookingId,
+      "metadata[simon_v3_booking_id]": input.bookingId,
+      "metadata[simon_v3_payment_link_id]": input.paymentLinkId,
+      "payment_intent_data[metadata][simon_v3_booking_id]": input.bookingId,
+      "payment_intent_data[metadata][simon_v3_payment_link_id]": input.paymentLinkId,
+      "line_items[0][quantity]": "1",
+      "line_items[0][price_data][currency]": "usd",
+      "line_items[0][price_data][unit_amount]": String(input.amountMinor),
+      "line_items[0][price_data][product_data][name]": input.description,
+      ...(input.customerEmail ? { customer_email: input.customerEmail } : {}),
+      ...(input.expiresAt ? { expires_at: String(input.expiresAt) } : {}),
+    },
+  },
+);
+
+export const getSimonCheckout = async (env, sessionId) => stripeRequest(
+  env, `/checkout/sessions/${encodeURIComponent(sessionId)}`,
+);
+
+export const expireSimonCheckout = async (env, sessionId, idempotencyKey) => stripeRequest(
+  env, `/checkout/sessions/${encodeURIComponent(sessionId)}/expire`,
+  { method: "POST", idempotencyKey },
+);
+
+export const createSimonRefund = async (env, input) => stripeRequest(
+  env,
+  "/refunds",
+  {
+    method: "POST",
+    idempotencyKey: input.idempotencyKey,
+    body: {
+      payment_intent: input.paymentIntentId,
+      amount: String(input.amountMinor),
+      reason: "requested_by_customer",
+      "metadata[simon_v3_booking_id]": input.bookingId,
+    },
+  },
+);
+
+export const getSimonRefund = async (env, refundId) => stripeRequest(
+  env, `/refunds/${encodeURIComponent(refundId)}`,
+);
+
+export const createDepositCheckout = async (env, application, origin, idempotencyKey = "") => {
   const statusUrl = `${origin}/application-status?token=${encodeURIComponent(application.public_status_token)}`;
   const form = new URLSearchParams({
     mode: "payment",
@@ -22,6 +105,7 @@ export const createDepositCheckout = async (env, application, origin) => {
     headers: {
       authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
       "content-type": "application/x-www-form-urlencoded",
+      ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
     },
     body: form,
   });
@@ -47,6 +131,19 @@ export const refundDeposit = async (env, application) => {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error?.message || `Stripe refund failed (${response.status}).`);
+  return result;
+};
+
+export const expireDepositCheckout = async (env, sessionId) => {
+  if (!sessionId) return null;
+  const response = await fetch(`${STRIPE_API}/checkout/sessions/${encodeURIComponent(sessionId)}/expire`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+  });
+  const result = await response.json();
+  if (!response.ok && result.error?.code !== "checkout_session_not_open") {
+    throw new Error(result.error?.message || `Stripe request failed (${response.status}).`);
+  }
   return result;
 };
 
