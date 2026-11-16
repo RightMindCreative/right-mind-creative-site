@@ -216,6 +216,51 @@ const context = (request, env = {}) => ({
   waitUntil() {},
 });
 
+const liveTruthDb = () => {
+  const application = {
+    id: "51515151-5151-4515-8515-515151515151", created_at: "2026-11-16T12:00:00.000Z",
+    updated_at: "2026-11-16T12:30:00.000Z", status: "confirmed", category: "recording",
+    service: "Recording", service_option: "4 hours", preferred_date: "2026-11-20",
+    preferred_time: "12:00 PM", first_name: "Test", last_name: "Client",
+    artist_name: "Test Artist", email: "test@example.test", phone: "5550000000",
+    google_event_id: "calendar-event", calendar_sync_status: "sent",
+    deposit_status: "paid", deposit_amount_cents: 7000, deposit_amount_paid_cents: 7000,
+    deposit_currency: "usd", deposit_paid_at: "2026-11-16T12:20:00.000Z",
+  };
+  const manualArtist = {
+    id: "52525252-5252-4525-8525-525252525252", created_at: "2026-11-01T12:00:00.000Z",
+    updated_at: "2026-11-16T12:40:00.000Z", first_name: "Test", last_name: "Client",
+    artist_name: "Updated Artist", email: "artist@example.test", linked_email: "test@example.test",
+    phone: "5550000000", social_links: null, notes: "private note",
+  };
+  const assignment = {
+    id: "53535353-5353-4535-8535-535353535353", application_id: application.id,
+    employee_slug: "jake-kaiser", employee_name: "Jake Kaiser", state: "accepted",
+    requested_by: "owner", request_note: null, response_note: null,
+    requested_at: "2026-11-16T12:10:00.000Z", responded_at: "2026-11-16T12:15:00.000Z",
+    updated_at: "2026-11-16T12:15:00.000Z",
+  };
+  return {
+    prepare(sql) {
+      return {
+        values: [], bind(...values) { this.values = values; return this; },
+        async first() {
+          if (sql.includes("FROM applications")) return this.values[0] === application.id ? application : null;
+          if (sql.includes("FROM session_assignments")) return this.values[0] === assignment.id ? assignment : null;
+          return null;
+        },
+        async all() {
+          if (sql.includes("FROM applications")) return { results: [application] };
+          if (sql.includes("FROM manual_artists")) return { results: [manualArtist] };
+          if (sql.includes("FROM session_assignments")) return { results: [assignment] };
+          return { results: [] };
+        },
+        async run() { return { success: true }; },
+      };
+    },
+  };
+};
+
 test("Simon V3 route table covers every formal operation exactly once", () => {
   assert.equal(SIMON_V3_ROUTES.length, 64);
   assert.equal(SIMON_V3_ROUTES.filter((route) => route.mode === "mutation").length, 36);
@@ -230,6 +275,37 @@ test("route matching preserves contract operation IDs and path parameters", () =
   assert.equal(match.operationId, "rescheduleBooking");
   assert.equal(match.params.booking_id, PERSON_ID);
   assert.equal(match.ifMatch, true);
+});
+
+test("production reads project the website's live business tables instead of an isolated V3 store", async () => {
+  const env = { APPLICATIONS_DB: liveTruthDb(), SIMON_V3_SERVICE_TOKEN: "staging-token" };
+  const expectations = [
+    ["applications", "application", "status", "confirmed"],
+    ["bookings", "booking", "provider_event_id", "calendar-event"],
+    ["clients", "client", "artist_name", "Updated Artist"],
+    ["employees", "employee", "slug", "jake-kaiser"],
+    ["assignments", "assignment", "state", "accepted"],
+  ];
+  for (const [path, kind, field, value] of expectations) {
+    const request = new Request(`https://preview.example/api/simon/v3/${path}`, { headers: headers() });
+    const response = await onRequest(context(request, env));
+    assert.equal(response.status, 200, path);
+    const body = await response.json();
+    assert.equal(body.items.length, 1, path);
+    assert.equal(body.items[0].kind, kind, path);
+    assert.equal(body.items[0].data[field], value, path);
+  }
+});
+
+test("production application reads resolve a real website application by id", async () => {
+  const id = "51515151-5151-4515-8515-515151515151";
+  const request = new Request(`https://preview.example/api/simon/v3/applications/${id}`, { headers: headers() });
+  const response = await onRequest(context(request, {
+    APPLICATIONS_DB: liveTruthDb(), SIMON_V3_SERVICE_TOKEN: "staging-token",
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("etag"), '"1"');
+  assert.equal((await response.json()).data.status, "confirmed");
 });
 
 test("actor authentication requires the service token and all three actor headers", async () => {

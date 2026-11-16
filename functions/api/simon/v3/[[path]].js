@@ -13,10 +13,12 @@ import {
 import {
   deliverStagingNotificationProbe, isStagingDeliveryProbe,
 } from "../../../_lib/simon-v3-notification-delivery.js";
+import { employeeProfile } from "../../../_lib/employee-auth.js";
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
 const now = () => new Date().toISOString();
 const CLEAN_FILE_RETENTION_POLICY = "clean-private-file-6-calendar-months-v1";
+const LIVE_EMPLOYEE_ID = "4a8f30e9-2d4c-4ec5-8f23-2ab9a9ed3201";
 
 const addUtcCalendarMonths = (value, months) => {
   const source = new Date(value);
@@ -328,6 +330,189 @@ const readSpecial = async (context, route, actor, traceId) => {
   return null;
 };
 
+const liveItem = (id, kind, data) => ({
+  id, kind, version: 1, data, evidence_refs: [],
+});
+
+const applicationItem = (row) => liveItem(row.id, "application", {
+  status: row.status,
+  category: row.category,
+  service: row.service,
+  service_option: row.service_option || null,
+  preferred_date: row.preferred_date || null,
+  preferred_time: row.preferred_time || null,
+  first_name: row.first_name,
+  last_name: row.last_name,
+  artist_name: row.artist_name || null,
+  email: row.email,
+  phone: row.phone,
+  stem_count: row.stem_count ?? null,
+  social_links: row.social_links || null,
+  notes: row.notes || null,
+  calendar_sync_status: row.calendar_sync_status || null,
+  email_notification_status: row.email_notification_status || null,
+  deposit_status: row.deposit_status || null,
+  deposit_amount_minor: row.deposit_amount_cents ?? null,
+  deposit_currency: String(row.deposit_currency || "usd").toUpperCase(),
+  deposit_paid_at: row.deposit_paid_at || null,
+  created_at: row.created_at,
+  updated_at: row.updated_at || row.created_at,
+});
+
+const bookingItem = (row) => liveItem(row.id, "booking", {
+  status: row.status,
+  application_id: row.id,
+  client_name: [row.first_name, row.last_name].filter(Boolean).join(" "),
+  artist_name: row.artist_name || null,
+  email: row.email,
+  phone: row.phone,
+  category: row.category,
+  service: row.service,
+  service_option: row.service_option || null,
+  preferred_date: row.preferred_date || null,
+  preferred_time: row.preferred_time || null,
+  provider_event_id: row.google_event_id || null,
+  calendar_sync_status: row.calendar_sync_status || null,
+  deposit_status: row.deposit_status || null,
+  deposit_amount_minor: row.deposit_amount_cents ?? null,
+  deposit_amount_paid_minor: row.deposit_amount_paid_cents ?? null,
+  deposit_currency: String(row.deposit_currency || "usd").toUpperCase(),
+  created_at: row.created_at,
+  updated_at: row.updated_at || row.created_at,
+});
+
+const clientItems = (applications, manualArtists) => {
+  const clients = new Map();
+  for (const row of applications) {
+    const emailKey = clean(row.email, 254).toLowerCase();
+    if (!emailKey) continue;
+    const existing = clients.get(emailKey);
+    const activity = row.deposit_paid_at || row.decided_at || row.updated_at || row.created_at;
+    if (!existing) {
+      clients.set(emailKey, liveItem(row.id, "client", {
+        first_name: row.first_name || null,
+        last_name: row.last_name || null,
+        name: [row.first_name, row.last_name].filter(Boolean).join(" "),
+        artist_name: row.artist_name || null,
+        email: row.email,
+        phone: row.phone || null,
+        social_links: row.social_links || null,
+        notes: null,
+        source: "application",
+        latest_activity: activity,
+        application_count: 1,
+        confirmed_count: row.status === "confirmed" ? 1 : 0,
+      }));
+      continue;
+    }
+    existing.data.application_count += 1;
+    if (row.status === "confirmed") existing.data.confirmed_count += 1;
+    if (activity > existing.data.latest_activity) existing.data.latest_activity = activity;
+  }
+  for (const row of manualArtists) {
+    const emailKey = clean(row.linked_email || row.email, 254).toLowerCase();
+    const existing = clients.get(emailKey);
+    const data = {
+      first_name: row.first_name || existing?.data.first_name || null,
+      last_name: row.last_name || existing?.data.last_name || null,
+      name: [row.first_name || existing?.data.first_name, row.last_name || existing?.data.last_name]
+        .filter(Boolean).join(" "),
+      artist_name: row.artist_name || existing?.data.artist_name || null,
+      email: row.email,
+      linked_email: row.linked_email || null,
+      phone: row.phone || existing?.data.phone || null,
+      social_links: row.social_links || existing?.data.social_links || null,
+      notes: row.notes || null,
+      source: "manual",
+      latest_activity: existing?.data.latest_activity || row.updated_at,
+      application_count: existing?.data.application_count || 0,
+      confirmed_count: existing?.data.confirmed_count || 0,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+    clients.set(emailKey, liveItem(row.id, "client", data));
+  }
+  return [...clients.values()].sort((left, right) => (
+    String(right.data.latest_activity || right.data.updated_at || "")
+      .localeCompare(String(left.data.latest_activity || left.data.updated_at || ""))
+  ));
+};
+
+const assignmentItem = (row) => liveItem(row.id, "assignment", {
+  application_id: row.application_id,
+  booking_id: row.application_id,
+  employee_id: LIVE_EMPLOYEE_ID,
+  employee_slug: row.employee_slug,
+  employee_name: row.employee_name,
+  state: row.state,
+  requested_by: row.requested_by,
+  request_note: row.request_note || null,
+  response_note: row.response_note || null,
+  requested_at: row.requested_at,
+  responded_at: row.responded_at || null,
+  updated_at: row.updated_at,
+});
+
+const readLiveBusinessTruth = async (context, route, actor, traceId) => {
+  if (!["admin", "system"].includes(actor.role)) return null;
+  const db = context.env.APPLICATIONS_DB;
+  const id = routeId(route);
+  let item = null;
+  let items = null;
+
+  if (route.kind === "application") {
+    if (id) {
+      const row = await db.prepare("SELECT * FROM applications WHERE id = ?").bind(id).first();
+      item = row ? applicationItem(row) : null;
+    } else {
+      const state = clean(new URL(context.request.url).searchParams.get("state"), 100);
+      const result = state
+        ? await db.prepare("SELECT * FROM applications WHERE status = ? ORDER BY created_at DESC LIMIT 100").bind(state).all()
+        : await db.prepare("SELECT * FROM applications ORDER BY created_at DESC LIMIT 100").all();
+      items = (result.results || []).map(applicationItem);
+    }
+  } else if (route.kind === "booking") {
+    const statuses = "'approved', 'payment_pending', 'confirmed', 'cancelled'";
+    if (id) {
+      const row = await db.prepare(`SELECT * FROM applications WHERE id = ? AND status IN (${statuses})`).bind(id).first();
+      item = row ? bookingItem(row) : null;
+    } else {
+      const result = await db.prepare(`SELECT * FROM applications WHERE status IN (${statuses}) ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 100`).all();
+      items = (result.results || []).map(bookingItem);
+    }
+  } else if (route.kind === "client") {
+    const [applicationResult, manualResult] = await Promise.all([
+      db.prepare(`SELECT * FROM applications WHERE status IN ('approved', 'payment_pending', 'confirmed') ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1000`).all(),
+      db.prepare("SELECT * FROM manual_artists ORDER BY updated_at DESC LIMIT 1000").all(),
+    ]);
+    const projected = clientItems(applicationResult.results || [], manualResult.results || []);
+    if (id) item = projected.find((candidate) => candidate.id === id) || null;
+    else items = projected.slice(0, 100);
+  } else if (route.kind === "employee") {
+    const employee = liveItem(LIVE_EMPLOYEE_ID, "employee", {
+      slug: employeeProfile.slug, name: employeeProfile.name, state: "active",
+    });
+    if (id) item = id === LIVE_EMPLOYEE_ID ? employee : null;
+    else items = [employee];
+  } else if (route.kind === "assignment") {
+    if (id) {
+      const row = await db.prepare("SELECT * FROM session_assignments WHERE id = ?").bind(id).first();
+      item = row ? assignmentItem(row) : null;
+    } else {
+      const result = await db.prepare("SELECT * FROM session_assignments ORDER BY updated_at DESC LIMIT 100").all();
+      items = (result.results || []).map(assignmentItem);
+    }
+  } else {
+    return null;
+  }
+
+  await auditRead(context, route, actor, traceId, id, "succeeded");
+  if (id) return item
+    ? jsonResponse(item, 200, { etag: '"1"' })
+    : problem(404, "not_found", "Resource not found", traceId);
+  return jsonResponse({ items, next_cursor: null });
+};
+
 const readResource = async (context, route, actor, traceId) => {
   const db = context.env.APPLICATIONS_DB;
   if (route.operationId === "getAgenda") {
@@ -354,6 +539,8 @@ const readResource = async (context, route, actor, traceId) => {
   if (route.operationId === "listFilesDueForRetention") {
     return listFilesDueForRetention(context, route, actor, traceId);
   }
+  const liveBusinessTruth = await readLiveBusinessTruth(context, route, actor, traceId);
+  if (liveBusinessTruth) return liveBusinessTruth;
   if (route.provider) {
     await auditRead(context, route, actor, traceId, routeId(route), "failed");
     return problem(502, "provider_failure", `${route.provider} read has no verified staging receipt`, traceId, "No provider result was represented as successful.");
