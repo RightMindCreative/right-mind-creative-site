@@ -262,9 +262,9 @@ const liveTruthDb = () => {
 };
 
 test("Simon V3 route table covers every formal operation exactly once", () => {
-  assert.equal(SIMON_V3_ROUTES.length, 64);
-  assert.equal(SIMON_V3_ROUTES.filter((route) => route.mode === "mutation").length, 36);
-  assert.equal(new Set(SIMON_V3_ROUTES.map((route) => route.operationId)).size, 64);
+  assert.equal(SIMON_V3_ROUTES.length, 69);
+  assert.equal(SIMON_V3_ROUTES.filter((route) => route.mode === "mutation").length, 40);
+  assert.equal(new Set(SIMON_V3_ROUTES.map((route) => route.operationId)).size, 69);
 });
 
 test("route matching preserves contract operation IDs and path parameters", () => {
@@ -341,7 +341,7 @@ test("shadow credential permits reads but rejects all 36 mutations before state 
   assert.equal(db.events.length, 0);
 
   const mutations = SIMON_V3_ROUTES.filter((route) => route.mode === "mutation");
-  assert.equal(mutations.length, 36);
+  assert.equal(mutations.length, 40);
   for (const route of mutations) {
     const path = route.pattern.replace(/:[a-z_]+/g, PERSON_ID);
     const mutation = new Request(`https://preview.example/api/simon/v3${path}`, {

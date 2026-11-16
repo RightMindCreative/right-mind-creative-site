@@ -1,6 +1,6 @@
 export const SERVICES = [
-  { id: "vocal-recording", name: "Vocal Recording Session", category: "recording", durationOptions: [120, 180, 240, 360, 480, 720], aliases: ["vocals", "vocal", "voc", "recording"] },
-  { id: "band-recording", name: "Band Recording Session", category: "recording", durationOptions: [120, 180, 240, 360, 480, 720], aliases: ["band", "full band", "drum tracking", "band tracking"] },
+  { id: "vocal-recording", name: "Vocal Recording Session", category: "recording", hourly_rate_minor: 7000, currency: 'USD', durationOptions: [120, 180, 240, 360, 480, 720], aliases: ["vocals", "vocal", "voc", "recording"] },
+  { id: "band-recording", name: "Band Recording Session", category: "recording", hourly_rate_minor: 7000, currency: 'USD', durationOptions: [120, 180, 240, 360, 480, 720], aliases: ["band", "full band", "drum tracking", "band tracking"] },
   { id: "music-production", name: "Music Production", category: "production", durationOptions: [120, 180, 240, 360, 480, 720], aliases: ["production", "prod", "beat"] },
   { id: "mixing-mastering", name: "Mixing & Mastering", category: "mixing", durationOptions: [], aliases: ["mix", "master", "mixing", "mastering"] },
   { id: "complete-single", name: "The Complete Single", category: "packages", durationOptions: [], aliases: ["complete single", "full song", "whole song"] },

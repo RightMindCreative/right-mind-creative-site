@@ -16,8 +16,8 @@ export async function onRequestGet(context) {
       COUNT(f.id) AS file_count
     FROM applications a
     LEFT JOIN application_files f ON f.application_id = a.id
-    WHERE a.status NOT IN ('approved', 'declined')
-       OR COALESCE(a.decided_at, a.updated_at, a.created_at) >= datetime('now', '-30 days')
+    WHERE a.archived_at IS NULL AND (a.status NOT IN ('approved', 'declined')
+       OR COALESCE(a.decided_at, a.updated_at, a.created_at) >= datetime('now', '-30 days'))
     GROUP BY a.id
     ORDER BY a.created_at DESC
     LIMIT 200
