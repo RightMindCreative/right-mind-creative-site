@@ -33,6 +33,8 @@ export const SIMON_V3_ROUTES = Object.freeze([
   route("GET", "/applications", "listApplications", "application", { roles: CLIENT, ownerScoped: true }),
   route("POST", "/applications", "createApplicationDraft", "application", { roles: CLIENT, ownerScoped: true, create: true }),
   route("GET", "/applications/:application_id", "getApplication", "application", { roles: CLIENT, ownerScoped: true }),
+  route("POST", "/applications/:application_id/archive", "archiveApplication", "application"),
+  route("POST", "/applications/:application_id/restore", "restoreApplication", "application"),
   route("PATCH", "/applications/:application_id", "updateApplication", "application", { roles: CLIENT, ownerScoped: true, ifMatch: true }),
   route("POST", "/applications/:application_id/submit", "submitApplication", "application", { roles: CLIENT, ownerScoped: true, provider: "notifications" }),
   route("POST", "/applications/:application_id/approve-with-deposit", "approveApplicationWithDeposit", "application", { provider: "stripe" }),
@@ -73,6 +75,9 @@ export const SIMON_V3_ROUTES = Object.freeze([
   route("POST", "/files/:file_id/scan-results", "recordFileScanResult", "file", { ifMatch: true, provider: "malware_scanner" }),
   route("POST", "/files/:file_id/expire", "expireFileForRetention", "file", { ifMatch: true, provider: "r2" }),
   route("POST", "/notifications", "enqueueNotification", "notification", { create: true, provider: "notifications" }),
+  route("GET", "/notifications/pending", "listPendingNotifications", "notification"),
+  route("POST", "/notifications/:notification_id/claim", "claimNotification", "notification"),
+  route("POST", "/notifications/:notification_id/delivery", "recordNotificationDelivery", "notification"),
   route("GET", "/notifications/:notification_id", "getNotification", "notification"),
   route("GET", "/events", "listEvents", "event", { special: "events" }),
   route("GET", "/operations/:operation_id", "getOperation", "operation", { special: "operation" }),
@@ -129,7 +134,7 @@ export const authenticateSimonV3 = (request, env) => {
   if (!env.APPLICATIONS_DB || (!env.SIMON_V3_SERVICE_TOKEN && !env.SIMON_V3_SHADOW_TOKEN)
       || (env.SIMON_V3_SERVICE_TOKEN && env.SIMON_V3_SHADOW_TOKEN
         && same(env.SIMON_V3_SERVICE_TOKEN, env.SIMON_V3_SHADOW_TOKEN))) {
-    return { error: problem(503, "provider_failure", "Simon V3 staging is not configured", traceId) };
+    return { error: problem(503, "provider_failure", "Simon V3 is not configured", traceId) };
   }
   const bearer = (request.headers.get("authorization") || "").match(/^Bearer\s+(.+)$/i)?.[1] || "";
   const serviceAuthenticated = same(bearer, env.SIMON_V3_SERVICE_TOKEN || "");

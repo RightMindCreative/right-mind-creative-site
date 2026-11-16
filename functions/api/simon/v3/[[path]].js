@@ -13,10 +13,14 @@ import {
 import {
   deliverStagingNotificationProbe, isStagingDeliveryProbe,
 } from "../../../_lib/simon-v3-notification-delivery.js";
+import { employeeProfile } from "../../../_lib/employee-auth.js";
+import { mutateLiveApplication } from "../../../_lib/simon-v3-live-applications.js";
+import { clientContact, readPendingNotifications, mutateNotificationDelivery } from "../../../_lib/simon-v3-delivery.js";
 
 const clean = (value, maximum = 500) => String(value || "").trim().slice(0, maximum);
 const now = () => new Date().toISOString();
 const CLEAN_FILE_RETENTION_POLICY = "clean-private-file-6-calendar-months-v1";
+const LIVE_EMPLOYEE_ID = "4a8f30e9-2d4c-4ec5-8f23-2ab9a9ed3201";
 
 const addUtcCalendarMonths = (value, months) => {
   const source = new Date(value);
@@ -255,6 +259,8 @@ const readSpecial = async (context, route, actor, traceId) => {
   if (route.special === "catalog") return jsonResponse(catalog());
   if (route.special === "policies") return jsonResponse(policies());
   if (route.special === "health") {
+    const environment = context.env.SIMON_V3_ENVIRONMENT === "production"
+      ? "production" : "staging";
     const latestCalendar = await db.prepare(`
       SELECT evidence_json, created_at FROM simon_v3_events
       WHERE action = 'checkAvailability' AND outcome = 'succeeded'
@@ -274,14 +280,14 @@ const readSpecial = async (context, route, actor, traceId) => {
     try {
       stripe = await getStripeHealth(context.env);
     } catch (error) {
-      console.error("Simon V3 staging Stripe health check failed safely", {
+      console.error("Simon V3 Stripe health check failed safely", {
         error_type: clean(error?.name, 80) || "Error",
       });
     }
     const items = [
-      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "d1", state: "ready", environment: "staging" }, evidence_refs: [] },
-      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "google_calendar", state: calendarVerified ? "ready" : "not_verified", environment: "staging", verified_at: latestCalendar?.created_at || null }, evidence_refs: [] },
-      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "stripe", state: stripe.state, mode: stripe.mode, environment: "staging" }, evidence_refs: [] },
+      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "d1", state: "ready", environment }, evidence_refs: [] },
+      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "google_calendar", state: calendarVerified ? "ready" : "not_verified", environment, verified_at: latestCalendar?.created_at || null }, evidence_refs: [] },
+      { id: crypto.randomUUID(), kind: "dependency_health", version: 1, data: { dependency: "stripe", state: stripe.state, mode: stripe.mode, environment }, evidence_refs: [] },
     ];
     await auditRead(context, route, actor, traceId, null, "succeeded");
     return jsonResponse({ items, next_cursor: null });
@@ -315,10 +321,16 @@ const readSpecial = async (context, route, actor, traceId) => {
     `).bind(includeArchived ? 1 : 0, `%${query.replace(/[\\%_]/g, "\\$&")}%`).all();
     const exact = [];
     const hints = [];
-    for (const row of result.results || []) {
-      const item = resourceFromRow(row);
+    const [applications, artists] = await Promise.all([
+      db.prepare("SELECT * FROM applications ORDER BY created_at DESC LIMIT 1000").all(),
+      db.prepare("SELECT * FROM manual_artists ORDER BY updated_at DESC LIMIT 1000").all(),
+    ]);
+    const candidates = new Map((result.results || []).map(row => [row.id, resourceFromRow(row)]));
+    for (const item of clientItems(applications.results || [], artists.results || [])) candidates.set(item.id, item);
+    for (const item of candidates.values()) {
       const values = [item.data.email, item.data.phone, item.data.name, item.data.artist_name].map((value) => clean(value, 200).toLowerCase());
-      (values.includes(query) ? exact : hints).push(item);
+      if (values.includes(query)) exact.push(item);
+      else if (values.some(value => value.includes(query))) hints.push(item);
     }
     await auditRead(context, route, actor, traceId, null, "succeeded");
     return jsonResponse({ exact_matches: exact, duplicate_hints: hints });
@@ -326,8 +338,200 @@ const readSpecial = async (context, route, actor, traceId) => {
   return null;
 };
 
+const liveItem = (id, kind, data) => ({
+  id, kind, version: 1, data, evidence_refs: [],
+});
+
+const applicationItem = (row) => ({ ...liveItem(row.id, "application", {
+  status: row.status,
+  category: row.category,
+  service: row.service,
+  service_option: row.service_option || null,
+  preferred_date: row.preferred_date || null,
+  preferred_time: row.preferred_time || null,
+  first_name: row.first_name,
+  last_name: row.last_name,
+  artist_name: row.artist_name || null,
+  email: row.email,
+  phone: row.phone,
+  stem_count: row.stem_count ?? null,
+  social_links: row.social_links || null,
+  notes: row.notes || null,
+  calendar_sync_status: row.calendar_sync_status || null,
+  email_notification_status: row.email_notification_status || null,
+  deposit_status: row.deposit_status || null,
+  deposit_amount_minor: row.deposit_amount_cents ?? null,
+  deposit_currency: String(row.deposit_currency || "usd").toUpperCase(),
+  deposit_paid_at: row.deposit_paid_at || null,
+  created_at: row.created_at,
+  updated_at: row.updated_at || row.created_at,
+  archived_at: row.archived_at || null,
+  agreed_total_minor: row.agreed_total_minor ?? null,
+  booking_id: ['approved', 'confirmed', 'payment_pending'].includes(row.status) ? row.id : null,
+}), version: Number(row.simon_version || 1) });
+
+const bookingItem = (row) => liveItem(row.id, "booking", {
+  status: row.status,
+  application_id: row.id,
+  starts_at: row.booking_starts_at || null,
+  ends_at: row.booking_ends_at || null,
+  agreed_total_minor: row.agreed_total_minor ?? null,
+  client_name: [row.first_name, row.last_name].filter(Boolean).join(" "),
+  artist_name: row.artist_name || null,
+  email: row.email,
+  phone: row.phone,
+  category: row.category,
+  service: row.service,
+  service_option: row.service_option || null,
+  preferred_date: row.preferred_date || null,
+  preferred_time: row.preferred_time || null,
+  provider_event_id: row.google_event_id || null,
+  calendar_sync_status: row.calendar_sync_status || null,
+  deposit_status: row.deposit_status || null,
+  deposit_amount_minor: row.deposit_amount_cents ?? null,
+  deposit_amount_paid_minor: row.deposit_amount_paid_cents ?? null,
+  deposit_currency: String(row.deposit_currency || "usd").toUpperCase(),
+  created_at: row.created_at,
+  updated_at: row.updated_at || row.created_at,
+});
+
+const clientItems = (applications, manualArtists) => {
+  const clients = new Map();
+  for (const row of applications) {
+    const emailKey = clean(row.email, 254).toLowerCase();
+    if (!emailKey) continue;
+    const existing = clients.get(emailKey);
+    const activity = row.deposit_paid_at || row.decided_at || row.updated_at || row.created_at;
+    if (!existing) {
+      clients.set(emailKey, liveItem(row.id, "client", {
+        first_name: row.first_name || null,
+        last_name: row.last_name || null,
+        name: [row.first_name, row.last_name].filter(Boolean).join(" "),
+        artist_name: row.artist_name || null,
+        email: row.email,
+        phone: row.phone || null,
+        social_links: row.social_links || null,
+        notes: null,
+        source: "application",
+        latest_activity: activity,
+        application_count: 1,
+        confirmed_count: row.status === "confirmed" ? 1 : 0,
+      }));
+      continue;
+    }
+    existing.data.application_count += 1;
+    if (row.status === "confirmed") existing.data.confirmed_count += 1;
+    if (activity > existing.data.latest_activity) existing.data.latest_activity = activity;
+  }
+  for (const row of manualArtists) {
+    const emailKey = clean(row.linked_email || row.email, 254).toLowerCase();
+    const existing = clients.get(emailKey);
+    const data = {
+      first_name: row.first_name || existing?.data.first_name || null,
+      last_name: row.last_name || existing?.data.last_name || null,
+      name: [row.first_name || existing?.data.first_name, row.last_name || existing?.data.last_name]
+        .filter(Boolean).join(" "),
+      artist_name: row.artist_name || existing?.data.artist_name || null,
+      email: row.email,
+      linked_email: row.linked_email || null,
+      phone: row.phone || existing?.data.phone || null,
+      social_links: row.social_links || existing?.data.social_links || null,
+      notes: row.notes || null,
+      source: "manual",
+      latest_activity: existing?.data.latest_activity || row.updated_at,
+      application_count: existing?.data.application_count || 0,
+      confirmed_count: existing?.data.confirmed_count || 0,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+    clients.set(emailKey, liveItem(row.id, "client", data));
+  }
+  return [...clients.values()].sort((left, right) => (
+    String(right.data.latest_activity || right.data.updated_at || "")
+      .localeCompare(String(left.data.latest_activity || left.data.updated_at || ""))
+  ));
+};
+
+const assignmentItem = (row) => liveItem(row.id, "assignment", {
+  application_id: row.application_id,
+  booking_id: row.application_id,
+  employee_id: LIVE_EMPLOYEE_ID,
+  employee_slug: row.employee_slug,
+  employee_name: row.employee_name,
+  state: row.state,
+  requested_by: row.requested_by,
+  request_note: row.request_note || null,
+  response_note: row.response_note || null,
+  requested_at: row.requested_at,
+  responded_at: row.responded_at || null,
+  updated_at: row.updated_at,
+});
+
+const readLiveBusinessTruth = async (context, route, actor, traceId) => {
+  if (!["admin", "system"].includes(actor.role)) return null;
+  const db = context.env.APPLICATIONS_DB;
+  const id = routeId(route);
+  let item = null;
+  let items = null;
+
+  if (route.kind === "application") {
+    if (id) {
+      const row = await db.prepare("SELECT * FROM applications WHERE id = ?").bind(id).first();
+      item = row ? applicationItem(row) : null;
+    } else {
+      const requestUrl = new URL(context.request.url);
+      const state = clean(requestUrl.searchParams.get("state"), 100);
+      const archiveFilter = requestUrl.searchParams.get('include_archived') === 'true' ? '' : ' AND archived_at IS NULL';
+      const result = state
+        ? await db.prepare(`SELECT * FROM applications WHERE status = ?${archiveFilter} ORDER BY created_at DESC LIMIT 100`).bind(state).all()
+        : await db.prepare(`SELECT * FROM applications WHERE 1 = 1${archiveFilter} ORDER BY created_at DESC LIMIT 100`).all();
+      items = (result.results || []).map(applicationItem);
+    }
+  } else if (route.kind === "booking") {
+    const statuses = "'approved', 'payment_pending', 'confirmed', 'cancelled'";
+    if (id) {
+      const row = await db.prepare(`SELECT * FROM applications WHERE id = ? AND status IN (${statuses})`).bind(id).first();
+      item = row ? bookingItem(row) : null;
+    } else {
+      const result = await db.prepare(`SELECT * FROM applications WHERE status IN (${statuses}) ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 100`).all();
+      items = (result.results || []).map(bookingItem);
+    }
+  } else if (route.kind === "client") {
+    const [applicationResult, manualResult] = await Promise.all([
+      db.prepare(`SELECT * FROM applications WHERE status IN ('approved', 'payment_pending', 'confirmed') ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1000`).all(),
+      db.prepare("SELECT * FROM manual_artists ORDER BY updated_at DESC LIMIT 1000").all(),
+    ]);
+    const projected = clientItems(applicationResult.results || [], manualResult.results || []);
+    if (id) item = projected.find((candidate) => candidate.id === id) || null;
+    else items = projected.slice(0, 100);
+  } else if (route.kind === "employee") {
+    const employee = liveItem(LIVE_EMPLOYEE_ID, "employee", {
+      slug: employeeProfile.slug, name: employeeProfile.name, state: "active",
+    });
+    if (id) item = id === LIVE_EMPLOYEE_ID ? employee : null;
+    else items = [employee];
+  } else if (route.kind === "assignment") {
+    if (id) {
+      const row = await db.prepare("SELECT * FROM session_assignments WHERE id = ?").bind(id).first();
+      item = row ? assignmentItem(row) : null;
+    } else {
+      const result = await db.prepare("SELECT * FROM session_assignments ORDER BY updated_at DESC LIMIT 100").all();
+      items = (result.results || []).map(assignmentItem);
+    }
+  } else {
+    return null;
+  }
+
+  await auditRead(context, route, actor, traceId, id, "succeeded");
+  if (id) return item
+    ? jsonResponse(item, 200, { etag: `"${item.version}"` })
+    : problem(404, "not_found", "Resource not found", traceId);
+  return jsonResponse({ items, next_cursor: null });
+};
+
 const readResource = async (context, route, actor, traceId) => {
   const db = context.env.APPLICATIONS_DB;
+  if (route.operationId === 'listPendingNotifications') return readPendingNotifications(context);
   if (route.operationId === "getAgenda") {
     return getCalendarAgenda(context, route, actor, traceId);
   }
@@ -352,6 +556,8 @@ const readResource = async (context, route, actor, traceId) => {
   if (route.operationId === "listFilesDueForRetention") {
     return listFilesDueForRetention(context, route, actor, traceId);
   }
+  const liveBusinessTruth = await readLiveBusinessTruth(context, route, actor, traceId);
+  if (liveBusinessTruth) return liveBusinessTruth;
   if (route.provider) {
     await auditRead(context, route, actor, traceId, routeId(route), "failed");
     return problem(502, "provider_failure", `${route.provider} read has no verified staging receipt`, traceId, "No provider result was represented as successful.");
@@ -1561,6 +1767,13 @@ const mutateNotification = async (
   const template = clean(body.data.template, 100);
   const dedupeKey = clean(body.data.dedupe_key, 200);
   const relatedId = clean(body.data.related_id, 36) || null;
+  if (template === 'client_outreach') {
+    const contact = recipient ? await clientContact(db, recipient) : null;
+    if (channel !== 'sms' || !contact?.phone || typeof body.data.variables?.message !== 'string'
+        || !body.data.variables.message.trim() || body.data.variables.message.length > 2000) {
+      return problem(400, 'validation_error', 'Outreach requires a resolved client phone and a message', traceId);
+    }
+  }
   if ((!recipient && audienceRole !== "admin") || (recipient && !isUuid(recipient))
       || !["sms", "email"].includes(channel) || !template || dedupeKey.length < 8
       || (relatedId && !isUuid(relatedId))
@@ -2472,6 +2685,17 @@ const mutate = async (context, route, actor, traceId) => {
   if (duplicate?.error) return duplicate.error;
   if (duplicate?.response) return duplicate.response;
   if (route.special === "rollback") return rollback(context, route, actor, traceId, idempotencyKey, requestHash);
+
+  const liveResult = await mutateLiveApplication(context, route, actor, traceId, idempotencyKey, requestHash, body);
+  if (liveResult) {
+    await eventStatement(db, { traceId, route, actor, resourceId: routeId(route), outcome: liveResult.status < 300 ? 'processed' : 'failed' }).run();
+    return liveResult;
+  }
+  const deliveryResult = await mutateNotificationDelivery(context, route, actor, traceId, idempotencyKey, body);
+  if (deliveryResult) {
+    await eventStatement(db, { traceId, route, actor, resourceId: routeId(route), outcome: deliveryResult.status < 300 ? 'processed' : 'failed' }).run();
+    return deliveryResult;
+  }
 
   const targetId = routeId(route);
   const current = targetId ? await loadResource(db, targetId) : null;
